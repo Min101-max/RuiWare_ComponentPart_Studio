@@ -6,7 +6,7 @@ import { validateComponent } from "../domain/validation";
 import type { PublishedTemplate } from "../library/publishedLibrary";
 import type { StageId } from "./stages";
 
-const initialMessage = "左侧可浏览已发布零部件，点击模板查看版本信息";
+const initialMessage = "左侧可浏览已发布零部件，点击模板预览模型和版本信息";
 
 export function useComponentWorkspace() {
   const [document, dispatch] = useReducer(componentReducer, undefined, createComponentDocument);

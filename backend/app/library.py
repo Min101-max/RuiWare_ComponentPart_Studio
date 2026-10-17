@@ -62,7 +62,7 @@ class LibraryError(Exception):
         super().__init__(code)
 
 
-async def read_published_library(client: httpx.AsyncClient, settings: Settings) -> PublishedLibrary:
+def upstream_connection(settings: Settings, path: str) -> tuple[httpx.URL, dict[str, str]]:
     api_key = settings.api_key.strip()
     if not api_key:
         raise LibraryError(503, "COMPONENT_LIBRARY_NOT_CONFIGURED")
@@ -72,32 +72,45 @@ async def read_published_library(client: httpx.AsyncClient, settings: Settings) 
         base = urlsplit(settings.api_url)
         if base.scheme not in ("http", "https") or not base.hostname or base.username or base.password:
             raise ValueError("invalid upstream address")
-        endpoint = httpx.URL(urlunsplit((base.scheme, base.netloc, "/api/public/v1/templates", "limit=1000", "")))
+        endpoint = httpx.URL(urlunsplit((base.scheme, base.netloc, path, "", "")))
     except (ValueError, httpx.InvalidURL):
         raise LibraryError(503, "COMPONENT_LIBRARY_INVALID_URL") from None
+    return endpoint, {"X-RuiWare-API-Key": api_key, "Accept": "application/json"}
+
+
+def upstream_error(response: httpx.Response) -> None:
+    if response.is_redirect:
+        raise LibraryError(502, "LIBRARY_UPSTREAM_ERROR")
+    if response.is_success:
+        return
+    try:
+        body = response.json()
+    except ValueError:
+        raise LibraryError(502, "LIBRARY_INVALID_RESPONSE") from None
+    error = body.get("error") if isinstance(body, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    known = {"PUBLIC_API_NOT_CONFIGURED", "PUBLIC_API_KEY_INVALID", "REMOTE_STORAGE_NOT_CONFIGURED", "REMOTE_STORAGE_UNAVAILABLE", "REMOTE_TEMPLATE_NOT_FOUND", "REMOTE_STORAGE_INTEGRITY_ERROR"}
+    if isinstance(code, str) and code in known:
+        raise LibraryError(response.status_code, code)
+    raise LibraryError(502, "LIBRARY_UPSTREAM_ERROR")
+
+
+async def read_published_library(client: httpx.AsyncClient, settings: Settings) -> PublishedLibrary:
+    endpoint, headers = upstream_connection(settings, "/api/public/v1/templates")
 
     try:
         async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
-            response = await client.get(endpoint, headers={"X-RuiWare-API-Key": api_key, "Accept": "application/json"})
+            response = await client.get(endpoint, params={"limit": 1000}, headers=headers)
     except (TimeoutError, httpx.TimeoutException):
         raise LibraryError(504, "LIBRARY_TIMEOUT") from None
     except httpx.RequestError:
         raise LibraryError(502, "LIBRARY_UNREACHABLE") from None
 
-    # Refuse redirects before reading their bodies, and never forward a key elsewhere.
-    if response.is_redirect:
-        raise LibraryError(502, "LIBRARY_UPSTREAM_ERROR")
+    upstream_error(response)
     try:
         body = response.json()
     except ValueError:
         raise LibraryError(502, "LIBRARY_INVALID_RESPONSE") from None
-    if not response.is_success:
-        error = body.get("error") if isinstance(body, dict) else None
-        code = error.get("code") if isinstance(error, dict) else None
-        known = {"PUBLIC_API_NOT_CONFIGURED", "PUBLIC_API_KEY_INVALID", "REMOTE_STORAGE_NOT_CONFIGURED", "REMOTE_STORAGE_UNAVAILABLE"}
-        if isinstance(code, str) and code in known:
-            raise LibraryError(response.status_code, code)
-        raise LibraryError(502, "LIBRARY_UPSTREAM_ERROR")
     try:
         return PublishedLibrary.model_validate(body)
     except ValidationError:
