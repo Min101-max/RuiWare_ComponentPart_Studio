@@ -46,7 +46,7 @@ export function PublishedTemplateLibrary({ onPreview, selectionResetToken }: { o
 
   return <section className="published-library" aria-label="已发布零部件库">
     <div className="panel-title"><span><Boxes size={16}/>已发布零部件</span><div className="library-actions"><small>{updatedAt ? items.length : "—"}</small><button className="library-refresh" onClick={() => void refresh()} disabled={loading} aria-label={error ? "重试读取发布库" : "刷新发布库"} title="刷新发布库"><RefreshCw size={14} className={loading ? "spinning" : ""}/></button></div></div>
-    <p className="hint">共享发布库 · 点击模板查看发布信息</p>
+    <p className="hint">共享发布库 · 点击模板查看信息和预览模型</p>
     <label className="library-search"><Search size={14}/><input aria-label="搜索模板名称或编码" placeholder="搜索名称或编码" value={query} onChange={event => setQuery(event.target.value)}/></label>
     <div className="library-status" role="status" aria-live="polite">{loading ? "正在读取发布库…" : updatedAt ? `上次读取：${formatDate(updatedAt)}` : "尚未连接发布库"}</div>
     {error && <div className="library-error" role="alert"><AlertTriangle size={15}/><div><b>{updatedAt ? "刷新失败，保留上次读取结果" : "发布库读取失败"}</b><p>{error}</p><button className="ghost" onClick={() => void refresh()} disabled={loading}>重试</button></div></div>}
@@ -63,7 +63,7 @@ export function PublishedTemplateLibrary({ onPreview, selectionResetToken }: { o
       <dt>模板 ID</dt><dd>{selected.templateId}</dd>
       <dt>模板包大小</dt><dd>{formatSize(selected.size)}</dd>
       <dt>SHA-256</dt><dd className="publication-hash">{selected.sha256}</dd>
-    </dl><p className="hint">已读取发布信息，模板包解析接入后可加入装配。</p></section>}
+    </dl><p className="hint">右侧预览此发布版本；预览不会加入组件装配。</p></section>}
     </Fragment>)}</div>
     {items.length === 1000 && <p className="hint">当前接口最多返回最近 1000 条发布记录。</p>}
   </section>;

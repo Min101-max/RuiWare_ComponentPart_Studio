@@ -1,18 +1,62 @@
-import { Canvas } from "@react-three/fiber";
+import { useEffect, useRef } from "react";
+import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
-import { Boxes, Eye } from "lucide-react";
+import { AlertTriangle, Boxes, Eye, RefreshCw } from "lucide-react";
+import { DoubleSide, Vector3 } from "three";
+import type { BufferGeometry, PerspectiveCamera } from "three";
+import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { ComponentMember } from "../domain/component";
 import type { PublishedTemplate } from "../library/publishedLibrary";
+import { useTemplatePreview } from "../library/useTemplatePreview";
+
+function PreviewScene({ geometry }: { geometry: BufferGeometry | null }) {
+  const { camera, size } = useThree();
+  const controls = useRef<OrbitControlsImpl>(null);
+  const radius = geometry?.boundingSphere?.radius || 8;
+  const center = geometry?.boundingSphere?.center || new Vector3();
+  const section = 10 ** Math.floor(Math.log10(radius));
+
+  useEffect(() => {
+    const viewCamera = camera as PerspectiveCamera;
+    const target = geometry?.boundingSphere?.center || new Vector3();
+    const modelRadius = geometry?.boundingSphere?.radius || 8;
+    const vertical = viewCamera.fov * Math.PI / 180;
+    const horizontal = 2 * Math.atan(Math.tan(vertical / 2) * size.width / size.height);
+    const distance = modelRadius / Math.sin(Math.min(vertical, horizontal) / 2) * 1.2;
+    viewCamera.position.copy(target).add(new Vector3(1, -1, 0.8).normalize().multiplyScalar(distance));
+    viewCamera.up.set(0, 0, 1);
+    viewCamera.near = Math.max(modelRadius / 10000, 0.001);
+    viewCamera.far = distance + modelRadius * 100;
+    viewCamera.updateProjectionMatrix();
+    if (controls.current) {
+      controls.current.target.copy(target);
+      controls.current.update();
+    }
+  }, [geometry, camera, size.width, size.height]);
+
+  return <>
+    <Grid key={section} args={[section * 40, section * 40]} position={[center.x, center.y, geometry?.boundingBox?.min.z || 0]} rotation={[Math.PI / 2, 0, 0]} cellSize={section / 5} cellThickness={.5} sectionSize={section} sectionThickness={1}/>
+    {geometry && <mesh><primitive object={geometry} attach="geometry" dispose={null}/><meshStandardMaterial color="#7394b0" metalness={.18} roughness={.55} side={DoubleSide}/></mesh>}
+    <OrbitControls ref={controls} makeDefault minDistance={radius / 100} maxDistance={radius * 100}/>
+  </>;
+}
 
 type Props = { members: ComponentMember[]; mateCount: number; previewTemplate: PublishedTemplate | null };
 
 export function ComponentViewport({ members, mateCount, previewTemplate }: Props) {
+  const preview = useTemplatePreview(previewTemplate);
+  const loaded = preview.result;
   return <section className="viewport" aria-label="组件三维视图">
     <div className="viewport-toolbar"><button className="tool active" type="button"><Eye size={15}/>预览</button><span>拖拽视图旋转 · 滚轮缩放</span><span className="view-status">{members.length} 个成员 · {mateCount} 个连接</span></div>
     <div className="viewport-scene"><Canvas camera={{ position: [7, 5, 7], up: [0, 0, 1], fov: 42 }}>
       <color attach="background" args={["#f5f7f9"]}/><ambientLight intensity={1.8}/><directionalLight position={[4, 6, 5]} intensity={2}/>
-      <Grid args={[20, 20]} rotation={[Math.PI / 2, 0, 0]} cellSize={.5} cellThickness={.5} sectionSize={2.5} sectionThickness={1}/><OrbitControls makeDefault/>
+      <PreviewScene geometry={loaded?.geometry || null}/>
     </Canvas></div>
-    <div className="empty-overlay"><Boxes size={30}/><b>{previewTemplate ? `已选择：${previewTemplate.name}` : members.length ? "组件成员模型尚未加载" : "浏览已发布零部件"}</b><span>{previewTemplate ? `V${previewTemplate.version} · 模型预览尚未接入` : "点击左侧模板查看版本信息"}</span></div>
+    {loaded && previewTemplate ? <div className="preview-caption" role="status" data-preview-state="ready"><b>{previewTemplate.name} · V{previewTemplate.version}</b><span>模型已加载 · {loaded.description.model.source === "package" ? "发布包内模型" : "旧版模型"} · mm</span></div> : <div className={`empty-overlay ${preview.error ? "preview-error" : ""}`} role="status" data-preview-state={preview.error ? "error" : previewTemplate ? "loading" : "idle"}>
+      {preview.error ? <AlertTriangle size={30}/> : previewTemplate ? <RefreshCw size={30} className="spinning"/> : <Boxes size={30}/>}
+      <b>{previewTemplate ? `已选择：${previewTemplate.name}` : members.length ? "组件成员模型尚未加载" : "浏览已发布零部件"}</b>
+      <span>{preview.error || (previewTemplate ? preview.phase === "package" ? "正在读取并校验模板包…" : "正在加载模型…" : "点击左侧模板预览零件")}</span>
+      {preview.error && <button type="button" className="ghost" onClick={preview.retry}>重试模型预览</button>}
+    </div>}
   </section>;
 }
