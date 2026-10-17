@@ -1,0 +1,65 @@
+# 组件模板平台
+
+## 代码架构
+
+工作台已按七阶段拆分，草稿模型、数据操作、验证、导出、发布库及三维视图分别管理。入口仅负责启动；详细目录、依赖方向和后续模型接入位置见 [代码架构说明](docs/CODE-ARCHITECTURE.md)。
+
+名称、编码、组件类型、设计说明、参数和规则统一保存在当前草稿中，切换阶段不会丢失。新建会重置草稿及工作台选择。当前草稿仅保存在本次页面会话内，刷新页面会丢失未导出的编辑。
+
+当前支持基础数据验证与草稿导出。装配求解、规则执行和正式发布明确显示为待接入；导出 JSON 不等于正式发布。
+
+## 启动
+
+安装 Node.js 24+ 和 Python 3.12+ 后，双击 `start-component.bat`。首次启动自动创建本项目 `.venv`、安装 Python 和前端依赖，后台启动 FastAPI 与 Vite，检查就绪后打开 <http://127.0.0.1:5180>。服务日志位于 `.runtime`，重复启动会复用已运行的服务。
+
+前端运行在 5180，FastAPI 后端运行在 8020，零部件平台默认运行在 8010。Vite 仅将 `/api` 请求转发给 FastAPI，不再承担业务接口或读取连接密钥。
+
+后端接口文档：<http://127.0.0.1:8020/docs>，接口描述：<http://127.0.0.1:8020/openapi.json>，健康检查：<http://127.0.0.1:8020/api/health>。健康检查只表示组件后端运行，不代表上游发布库可用。
+
+手动启动（在项目根目录，分别使用两个终端）：
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
+.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8020 --reload --reload-dir backend
+```
+
+```powershell
+npm ci
+npm run dev
+```
+
+手动启动的服务可用 Ctrl+C 停止。一键启动的服务在后台运行；修改密钥配置后，先停止占用 8020 的本项目后端进程，再重新启动。修改 Python 代码会自动重载。
+
+## 连接已发布零部件库
+
+1. 启动零部件模板平台，其默认 API 地址为 `http://127.0.0.1:8010`。
+2. 按零部件平台 `docs/DELIVERY-AND-DEPLOYMENT.md` 配置 MinIO 共享存储及 `RUIWARE_PUBLIC_API_KEY`，重启零部件平台使其生效。
+3. 将本项目 `.env.example` 复制为 `.env.local`，填入同一个 `RUIWARE_PUBLIC_API_KEY`。服务在其他地址时修改 `RUIWARE_TEMPLATE_API_URL`。也支持通过系统环境变量设置，环境变量优先于文件。
+4. 重启组件平台的 FastAPI 后端。左侧自动读取发布库，可按名称/编码搜索、刷新、查看每个发布版本的详情。后端依次读取根目录 `.env`、`.env.local`、系统环境变量，后者优先。
+
+`.env`、`.env.local` 已被 Git 忽略。密钥仅供 Python 后端使用，不进入页面、浏览器请求或构建产物；不要将它命名为 `VITE_*` 变量。
+
+数据来源为零部件平台的只读接口 `GET /api/public/v1/templates?limit=1000`，展示已同步至 MinIO 的发布记录。本机发布成功但同步关闭或失败的版本不会出现。当前接口最多返回最近 1000 条，搜索在已读取的记录中进行。
+
+第一阶段提供发布信息浏览。模板包解析、模型加载及加入装配将在后续接入，列表不会生成虚构的零部件模型或接口。刷新失败时保留当前页面上次成功读取的数据，重新打开页面需要再次读取。
+
+## 常见提示
+
+| 提示 | 处理方式 |
+| --- | --- |
+| 尚未配置连接密钥 | 填写本项目 `.env.local` 或设置系统环境变量后重启组件平台 |
+| 零部件平台尚未启用接口 | 在零部件平台配置 `RUIWARE_PUBLIC_API_KEY` 并重启 |
+| 连接密钥不正确 | 确认两个平台密钥一致，检查系统环境变量是否覆盖文件设置 |
+| 连接密钥格式不正确 | 使用不含换行及控制字符的 ASCII 密钥，重启 FastAPI 后端 |
+| 尚未配置共享发布库 | 完成零部件平台 MinIO 配置 |
+| 无法连接 / 超时 | 启动零部件平台，检查 API 地址、网络及共享存储服务 |
+| 暂无模板 | 在零部件平台发布模板，确认同步成功后刷新 |
+
+## 检查与部署
+
+运行 `npm test` 检查前端领域数据、验证、导出和列表解析；运行 `.venv\Scripts\python.exe -m unittest discover -s backend/tests -v` 检查 FastAPI 接口、上游错误、配置和静态页面。运行 `npm run build` 检查并构建前端。`npm run preview` 同样转发 `/api`，需要后端运行。
+
+本机运行构建版本：先执行 `npm run build`，再启动 `.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8020`（不带 `--reload`），打开 <http://127.0.0.1:8020>。FastAPI 同时提供 `dist` 页面、静态资源和 API，构建应在后端启动前完成。
+
+若将 `dist` 单独部署到静态服务器，需把同源 `/api` 转发到 FastAPI；只复制前端文件不会包含后端。公网部署时通过正式反向代理提供 HTTPS，并按部署环境配置地址和访问控制。不要将密钥写入前端构建。
