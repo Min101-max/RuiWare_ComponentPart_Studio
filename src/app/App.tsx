@@ -10,6 +10,7 @@ import { ValidationStage } from "../stages/ValidationStage";
 import { PublishStage } from "../stages/PublishStage";
 import { WorkspaceLayout } from "./WorkspaceLayout";
 import { useComponentWorkspace } from "./useComponentWorkspace";
+import { AgentChanges } from "./AgentChanges";
 import { STAGES } from "./stages";
 import "../styles/workspace.css";
 
@@ -41,8 +42,26 @@ export function App() {
       </div>)}
     </>}
     viewport={<ComponentViewport members={members} mateCount={mates.length} previewTemplate={workspace.previewTemplate}/>}
+    actionsDisabled={!workspace.editable}
     inspector={<>
-      <section className="inspector-section" aria-label="当前阶段面板"><h3>当前阶段 · {STAGES.find(item => item.id === stage)?.label}</h3>{renderStage()}{stage !== "validation" && stage !== "publish" && <div className="next-hint" role="status">{workspace.message}</div>}</section>
+      <section className="inspector-section shared-draft" aria-label="共享草稿">
+        <h3>共享草稿</h3>
+        <label>当前草稿<select value={workspace.shared.draftId || ""} disabled={!workspace.editable} onChange={event => { void workspace.selectDraft(event.target.value); }}>
+          {!workspace.shared.draftId && <option value="">正在读取…</option>}
+          {workspace.shared.draftId && !workspace.shared.items.some(item => item.draftId === workspace.shared.draftId) && <option value={workspace.shared.draftId}>{document.definition.name}</option>}
+          {workspace.shared.items.map(item => <option key={item.draftId} value={item.draftId}>{item.name || "未命名组件"} · R{item.revision} · {item.draftId.slice(0, 8)}</option>)}
+        </select></label>
+        <div className="draft-save-status" role="status">{workspace.shared.dirty ? "本页有未保存修改" : workspace.shared.draftId ? `已保存 · R${document.revision} · 网页与 AI 共用` : "正在连接草稿服务"}</div>
+        <p className="draft-save-status">同时修改时，你的输入优先；Agent 修改会显示差异。</p>
+        <button type="button" className="ghost" disabled={!workspace.shared.draftId} onClick={() => { void workspace.copyDraftLink(); }}>复制草稿链接</button>
+        {workspace.shared.error && <div className="draft-sync-error" role="alert"><p>{workspace.shared.error}</p>
+          {workspace.shared.status !== "conflict" && <button className="ghost" onClick={workspace.retrySave}>重试</button>}
+          {workspace.shared.dirty && <button className="ghost" onClick={workspace.downloadLocalDraft}>下载本地未保存副本</button>}
+          {workspace.shared.draftId && <button className="ghost" onClick={workspace.reloadDraft}>{workspace.shared.dirty ? "放弃未保存内容并重新读取" : "重新读取"}</button>}
+        </div>}
+      </section>
+      <AgentChanges shared={workspace.shared} onDismiss={workspace.dismissAgentChanges}/>
+      <section className="inspector-section" aria-label="当前阶段面板"><h3>当前阶段 · {STAGES.find(item => item.id === stage)?.label}</h3><fieldset className="stage-fields" disabled={!workspace.editable}>{renderStage()}</fieldset>{stage !== "validation" && stage !== "publish" && <div className="next-hint" role="status">{workspace.message}</div>}</section>
       <section className="inspector-section"><h3>数据摘要</h3><div className="stats"><div><b>{members.length}</b><span>成员</span></div><div><b>{mates.length}</b><span>内部连接</span></div><div><b>{document.ports.length}</b><span>组件接口</span></div></div></section>
     </>}
   />;

@@ -20,6 +20,11 @@ backend/app/config.py             后端环境配置，密钥仅留在 Python
 backend/app/library.py            发布库响应模型、只读调用和 API 路由
 backend/app/preview.py            包下载校验、安全 ZIP 读取、模型缓存和预览路由
 backend/app/main.py               FastAPI 入口、生命周期、健康检查、静态页面
+backend/app/components/           共享工程模型、编辑/验证/导出、SQLite 修订事务、REST
+backend/app/mcp/                  官方 MCP SDK Streamable HTTP 入口及业务工具
+src/app/sharedDraft.ts            共享草稿请求、串行保存、乐观显示、轮询和冲突恢复
+src/app/AgentChanges.tsx           Agent 来源提示、修订记录、中文字段前后差异
+backend/app/components/changes.py  文档差异提取，列表按稳定 ID 对齐
 backend/tests/test_api.py         后端接口及配置测试
 backend/tests/test_preview.py     发布包及模型预览测试
 scripts/start-dev.ps1             一键安装、后台启动及就绪检查
@@ -48,7 +53,7 @@ FastAPI 提供 `/api/health`、`/api/published-templates`、`/api/published-temp
 
 ## 三类状态
 
-1. 工程文档：定义、成员、连接、接口、槽位、参数、绑定、规则。由 `componentReducer` 修改；有效编辑增加修订号，新建返回独立的新文档。
+1. 工程文档：定义、成员、连接、接口、槽位、参数、绑定、规则。后端 `components` 服务是持久化编辑、验证、导出的权威实现，SQLite 事务检查 `expectedRevision` 并保存。前端 `componentReducer` 仅将待保存动作投影为即时输入显示，服务端结果确认后替换；跨语言测试检查兼容行为。有效编辑增加修订号，新建创建独立草稿。
 2. 页面交互：当前阶段、所选成员、预览模板、状态消息在工作台 hook 中；搜索、列表加载和详情展开在 library 中。收起详情不会清除工作台预览选择，新建会清除工作台选择并收起发布详情，保留列表与搜索。
 3. 运行时三维资源：预览 hook 管理请求取消、竞态保护和 geometry 释放，viewport 管理材质、相机、网格和轨道控制。切换及新建清理旧资源，自动对焦不改变模型原点和单位。渲染对象和预览结果不进入文档。
 
@@ -63,6 +68,10 @@ FastAPI 提供 `/api/health`、`/api/published-templates`、`/api/published-temp
 ## 验证与导出
 
 `validateComponent(document)` 每次对当前文档计算 `pass / fail / pending`。基础数据检查不能证明几何可装配或规则满足，装配求解和规则执行目前固定为 pending。
+
+网页保存完成后的检查与导出使用后端 `validate_component` / `serialize_component`，保存期间使用前端纯函数显示预检查；两者受共享文档兼容测试约束。`sharedDraft` 控制器串行保存，空闲时读取 AI 修改并持续展示前后差异，保存响应中的 Agent 变更同样进入提示。SQLite 在同一事务记录来源和差异；用户旧修订写入只在全部中间修订均来自 Agent 时重放该动作，实现同字段用户优先、其他字段保留。MCP 仍使用精确修订检查；其他用户窗口冲突、历史不全、重置和对象删除不会自动合并。保存失败时保留本地投影，可下载本地副本，显式重新读取才放弃未保存内容。草稿选择保存在 URL `?draft=` 与 localStorage，工程数据保存在后端。
+
+MCP `/mcp` 与 REST 共用 `DraftRepository`、HTTP 客户端和预览缓存，MCP 会话管理器由 FastAPI lifespan 启停。预览通过显式 `client/settings/cache` 参数复用，不依赖虚构的 HTTP Request。MCP 工具不会模拟浏览器点击，模型返回固定发布哈希的绝对下载 URL。详见 [MCP 接入](MCP.md)。
 
 `serializeComponent(document)` 保留 `component-1.0` 的 `name`、`stages.definition`、`stages.assembly`、`stages.ports`、参数值、规则及验证主体结构。增加修订、完整版本引用、结构化引用、参数定义、槽位和绑定。旧连接字符串仍导出，新增读取方应使用 `fromRef/toRef` 以避免含点号标识的歧义。旧接口的 `sourceMemberId/sourceInterfaceId` 字段保留。
 

@@ -158,10 +158,9 @@ def read_package(data: bytes, publication: PublishedTemplate) -> tuple[list[dict
         raise LibraryError(502, "PACKAGE_INVALID") from None
 
 
-async def load_preview(request: Request, publication_id: str, expected_hash: str | None) -> CachedPreview:
+async def read_publication(client: httpx.AsyncClient, settings: Settings, publication_id: str, expected_hash: str | None = None) -> PublishedTemplate:
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", publication_id):
         raise LibraryError(404, "REMOTE_TEMPLATE_NOT_FOUND")
-    client, settings, cache = request.app.state.http, request.app.state.settings, request.app.state.preview_cache
     prefix = "/api/public/v1/templates/" + quote(publication_id, safe="")
     try:
         async with asyncio.timeout(DOWNLOAD_TIMEOUT_SECONDS):
@@ -174,6 +173,19 @@ async def load_preview(request: Request, publication_id: str, expected_hash: str
                 raise LibraryError(502, "LIBRARY_INVALID_RESPONSE")
             if expected_hash and publication.sha256.lower() != expected_hash.lower():
                 raise LibraryError(409, "PUBLICATION_CHANGED")
+            return publication
+    except (TimeoutError, httpx.TimeoutException):
+        raise LibraryError(504, "LIBRARY_TIMEOUT") from None
+    except httpx.RequestError:
+        raise LibraryError(502, "LIBRARY_UNREACHABLE") from None
+
+
+async def read_preview(client: httpx.AsyncClient, settings: Settings, cache: PreviewCache,
+                       publication_id: str, expected_hash: str | None) -> CachedPreview:
+    prefix = "/api/public/v1/templates/" + quote(publication_id, safe="")
+    try:
+        async with asyncio.timeout(DOWNLOAD_TIMEOUT_SECONDS):
+            publication = await read_publication(client, settings, publication_id, expected_hash)
             key = publication_id, publication.sha256.lower()
             async with cache.slots:
                 cached = cache.get(key)
@@ -204,6 +216,11 @@ async def load_preview(request: Request, publication_id: str, expected_hash: str
         raise LibraryError(504, "LIBRARY_TIMEOUT") from None
     except httpx.RequestError:
         raise LibraryError(502, "LIBRARY_UNREACHABLE") from None
+
+
+async def load_preview(request: Request, publication_id: str, expected_hash: str | None) -> CachedPreview:
+    return await read_preview(request.app.state.http, request.app.state.settings, request.app.state.preview_cache,
+                              publication_id, expected_hash)
 
 
 router = APIRouter(prefix="/api/published-templates", tags=["模型预览"])
