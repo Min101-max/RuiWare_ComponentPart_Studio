@@ -20,6 +20,35 @@ function Wait-Ready([string]$Url, [System.Diagnostics.Process]$Process) {
     throw "Service did not become ready: $Url. Check logs in $runtimeDir"
 }
 
+function Restart-UnhealthyBackend([int[]]$ListenerIds, [string]$PythonExe) {
+    $roots = @()
+    foreach ($listenerId in $ListenerIds) {
+        $processId = $listenerId
+        $root = $null
+        # Windows' venv launcher and Uvicorn reload workers may own different PIDs.
+        for ($depth = 0; $processId -gt 0 -and $depth -lt 16; $depth++) {
+            $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId"
+            if (-not $process) { break }
+            if ($process.ExecutablePath -eq $PythonExe -and
+                $process.CommandLine -match '(?:^|\s)-m\s+uvicorn\s+backend\.app\.main:app(?:\s|$)') {
+                $root = $process.ProcessId
+                break
+            }
+            $processId = $process.ParentProcessId
+        }
+        if (-not $root) {
+            throw "Port 8020 is occupied by an unidentified service (PID $listenerId). No processes were stopped. Check .runtime/backend.err.log if a previous backend failed."
+        }
+        $roots += $root
+    }
+    # Verify every listener before stopping anything; never stop other projects.
+    foreach ($root in ($roots | Select-Object -Unique)) {
+        Write-Host "Restarting unresponsive component backend (PID $root)..."
+        & taskkill.exe /PID $root /T /F | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to stop the unresponsive component backend (PID $root)." }
+    }
+}
+
 try {
     if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) { throw 'Install Node.js 24 or newer first.' }
     $nodeVersion = (& node --version).TrimStart('v')
@@ -53,8 +82,9 @@ try {
     $healthUrl = 'http://127.0.0.1:8020/api/health'
     $health = Get-JsonResponse $healthUrl
     if ($health.service -ne 'component-template-api') {
-        if (Get-NetTCPConnection -LocalPort 8020 -State Listen -ErrorAction SilentlyContinue) {
-            throw 'Port 8020 is occupied by another service. Stop that service before starting this platform.'
+        $listeners = @(Get-NetTCPConnection -LocalPort 8020 -State Listen -ErrorAction SilentlyContinue)
+        if ($listeners.Count -gt 0) {
+            Restart-UnhealthyBackend -ListenerIds @($listeners.OwningProcess | Select-Object -Unique) -PythonExe $pythonExe
         }
         $api = Start-Process -FilePath $pythonExe -ArgumentList @('-m', 'uvicorn', 'backend.app.main:app', '--host', '127.0.0.1', '--port', '8020', '--reload', '--reload-dir', 'backend') -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtimeDir 'backend.out.log') -RedirectStandardError (Join-Path $runtimeDir 'backend.err.log') -PassThru
         $startedProcesses += $api
@@ -78,6 +108,7 @@ try {
 
     Write-Host "Component workbench: $frontendUrl"
     Write-Host 'FastAPI docs: http://127.0.0.1:8020/docs'
+    Write-Host 'MCP (Streamable HTTP): http://127.0.0.1:8020/mcp'
     Write-Host "Service logs: $runtimeDir"
     if (-not $NoBrowser) { Start-Process $frontendUrl }
 } catch {

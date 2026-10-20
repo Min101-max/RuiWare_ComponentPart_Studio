@@ -12,6 +12,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 class Settings:
     api_url: str = "http://127.0.0.1:8010"
     api_key: str = field(default="", repr=False)
+    draft_db: Path = PROJECT_ROOT / ".runtime" / "components.sqlite3"
+    mcp_token: str = field(default="", repr=False)
+    public_base_url: str = "http://127.0.0.1:8020"
 
 
 def load_settings(root: Path = PROJECT_ROOT) -> Settings:
@@ -20,4 +23,7 @@ def load_settings(root: Path = PROJECT_ROOT) -> Settings:
     return Settings(
         api_url=values.get("RUIWARE_TEMPLATE_API_URL") or "http://127.0.0.1:8010",
         api_key=values.get("RUIWARE_PUBLIC_API_KEY") or "",
+        draft_db=Path(values.get("COMPONENT_DRAFT_DB") or PROJECT_ROOT / ".runtime" / "components.sqlite3"),
+        mcp_token=values.get("COMPONENT_MCP_TOKEN") or "",
+        public_base_url=values.get("COMPONENT_PUBLIC_BASE_URL") or "http://127.0.0.1:8020",
     )
