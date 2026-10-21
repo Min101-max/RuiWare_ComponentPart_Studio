@@ -12,7 +12,12 @@ export type PreviewDescription = {
   interfaces: Record<string, unknown>[];
   model: { format: "stl"; source: "package" | "legacy"; url: string; sha256: string; size: number };
 };
+export type ReconstructionParameter = {
+  id: string; label: string; unit: string; valueType: string; default: number | string | boolean;
+  minimum: number | null; maximum: number | null; allowedValues: (number | string | boolean)[];
+};
 export type LoadedPreview = { description: PreviewDescription; geometry: BufferGeometry };
+export type ReconstructionInfo = { publication: PublishedTemplate; parameters: ReconstructionParameter[] };
 export type PreviewPhase = "package" | "model";
 const MAX_MODEL_BYTES = 64 * 1024 * 1024;
 
@@ -70,16 +75,18 @@ export function parseStlGeometry(data: ArrayBuffer): BufferGeometry {
 }
 
 const messages: Record<string, string> = {
-  MODEL_MISSING: "该发布版本没有可用的预览模型，请在零部件平台发布包含 STL 的新版本后重试。",
+  MODEL_MISSING: "无法显示这个零件，请联系模板维护人员检查模板内容。",
+  PACKAGE_UNSUPPORTED: "无法显示这个零件，请联系模板维护人员检查模板内容。",
+  MODEL_RECONSTRUCTION_FAILED: "零件暂时无法显示，请稍后重试。",
+  PARAMETER_INVALID: "参数超出该零件的可调整范围。",
   PACKAGE_INTEGRITY_ERROR: "模板包校验失败，请刷新发布库后重试。",
   MODEL_INTEGRITY_ERROR: "模型文件校验失败，请检查发布版本后重试。",
   PACKAGE_INVALID: "模板包内容不完整或格式不正确，请检查发布版本。",
-  PACKAGE_UNSUPPORTED: "暂不支持该模板包的格式、单位或坐标系。",
   PACKAGE_TOO_LARGE: "模板包或模型超过当前预览大小限制。",
   PUBLICATION_CHANGED: "发布记录已变化，请刷新发布库后重新选择。",
   REMOTE_TEMPLATE_NOT_FOUND: "该发布版本已不存在，请刷新发布库。",
   REMOTE_STORAGE_INTEGRITY_ERROR: "共享发布库中的模板包校验失败。",
-  LIBRARY_TIMEOUT: "读取模型超时，请重试。",
+  LIBRARY_TIMEOUT: "读取零件超时，请重试。",
   LIBRARY_UNREACHABLE: "无法连接零部件平台，请检查服务后重试。",
   PUBLIC_API_KEY_INVALID: "发布库连接密钥不正确，请检查组件后端配置。",
   COMPONENT_LIBRARY_NOT_CONFIGURED: "组件后端尚未配置发布库连接密钥。",
@@ -92,17 +99,32 @@ async function responseError(response: Response): Promise<never> {
   throw new Error(messages[code] || "模型读取失败，请检查服务连接后重试。");
 }
 
-export async function loadTemplatePreview(selected: PublishedTemplate, signal: AbortSignal, onPhase?: (phase: PreviewPhase) => void): Promise<LoadedPreview> {
-  onPhase?.("package");
-  const response = await fetch(`/api/published-templates/${encodeURIComponent(selected.publicationId)}/preview?sha256=${selected.sha256.toLowerCase()}`, { signal, cache: "no-store" });
+export async function loadReconstructionInfo(selected: PublishedTemplate, signal: AbortSignal): Promise<ReconstructionInfo> {
+  const response = await fetch(`/api/published-templates/${encodeURIComponent(selected.publicationId)}/reconstruction?sha256=${selected.sha256.toLowerCase()}`, { signal, cache: "no-store" });
   if (!response.ok) return responseError(response);
-  const description = parsePreviewDescription(await response.json(), selected);
+  const value: unknown = await response.json();
+  if (!record(value) || !record(value.publication) || !Array.isArray(value.parameters)) throw new Error("无法显示这个零件，请稍后重试。");
+  const publication = parsePublishedTemplates({ items: [value.publication], count: 1 })[0];
+  if (publication.publicationId !== selected.publicationId || publication.templateId !== selected.templateId || publication.sha256.toLowerCase() !== selected.sha256.toLowerCase()) throw new Error("发布版本已更新，请重新选择。");
+  const parameters = value.parameters.map(item => {
+    if (!record(item) || typeof item.id !== "string" || typeof item.label !== "string" || typeof item.unit !== "string" ||
+      !["number", "integer", "string", "enum", "boolean"].includes(String(item.valueType)) ||
+      !(typeof item.default === "number" || typeof item.default === "string" || typeof item.default === "boolean") ||
+      !(item.minimum === null || typeof item.minimum === "number") || !(item.maximum === null || typeof item.maximum === "number") ||
+      !Array.isArray(item.allowedValues)) throw new Error("无法读取零件参数。");
+    return item as ReconstructionParameter;
+  });
+  return { publication, parameters };
+}
+
+export async function loadTemplatePreview(selected: PublishedTemplate, parameters: Record<string, unknown>, signal: AbortSignal): Promise<LoadedPreview> {
   signal.throwIfAborted();
-  onPhase?.("model");
-  const model = await fetch(description.model.url, { signal, cache: "no-store" });
-  if (!model.ok) return responseError(model);
-  const reader = model.body?.getReader();
-  if (!reader) throw new Error("模型文件读取失败，请重试。");
+  const response = await fetch(`/api/published-templates/${encodeURIComponent(selected.publicationId)}/reconstruction/model?sha256=${selected.sha256.toLowerCase()}`, {
+    method: "POST", signal, cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ parameters }),
+  });
+  if (!response.ok) return responseError(response);
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("零件文件读取失败，请重试。");
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -110,16 +132,21 @@ export async function loadTemplatePreview(selected: PublishedTemplate, signal: A
       const { value, done } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > description.model.size || size > MAX_MODEL_BYTES) throw new Error("模型文件大小与发布记录不一致。");
+      if (size > MAX_MODEL_BYTES) throw new Error("零件文件超过当前预览大小限制。");
       chunks.push(value);
     }
   } finally { await reader.cancel(); }
-  if (size !== description.model.size) throw new Error("模型文件大小与发布记录不一致。");
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  if (Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("") !== description.model.sha256.toLowerCase()) throw new Error("模型文件校验失败，请重试。");
+  const actualHash = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+  const responseHash = response.headers.get("x-ruiware-sha256");
+  if (responseHash && actualHash !== responseHash.toLowerCase()) throw new Error("零件文件校验失败，请重试。");
   signal.throwIfAborted();
+  const description: PreviewDescription = {
+    publication: selected, unitSystem: "mm-kg-s", coordinateSystem: "right-handed-z-up", parameters: [], interfaces: [],
+    model: { format: "stl", source: "package", url: "", sha256: actualHash, size },
+  };
   return { description, geometry: parseStlGeometry(bytes.buffer) };
 }

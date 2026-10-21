@@ -35,7 +35,7 @@ tests/                           Node 原生领域和前端列表测试
 
 运行链路：`浏览器 → Vite :5180 /api 转发 → FastAPI :8020 → 零部件平台 :8010`。FastAPI 通过 httpx 异步调用固定发布列表路径，10 秒超时、拒绝重定向，使用 Pydantic 校验响应并移除契约之外的字段。FastAPI 生命周期创建并关闭 HTTP 客户端；业务异常保留原错误码和安全提示，不返回上游内部详情。配置来自根目录 `.env`、`.env.local` 和系统环境变量，系统环境变量优先。
 
-FastAPI 提供 `/api/health`、`/api/published-templates`、`/api/published-templates/{id}/preview`、`/api/published-templates/{id}/preview/model`、`/docs` 和 `/openapi.json`；健康检查不联系零部件平台。预览固定发布哈希，受限下载并校验 rwpart 和 STL，有界内存缓存成功模型，详细格式见 `PART-PREVIEW.md`。开发与预览由 Vite 转发 `/api`，不开放跨域。构建完成后也可由 FastAPI 直接提供 `dist`，详情见 README。
+FastAPI 提供 `/api/health`、`/api/published-templates`、兼容 STL 预览接口，以及 `/api/published-templates/{id}/reconstruction` 和 `/api/published-templates/{id}/reconstruction/model` 本地重建接口；健康检查不联系零部件平台。发布包重建先固定发布哈希并验证整包，再将白名单定义交给项目内固定版本 CAD 引擎；建模在受并发限制的子进程中完成，临时输出完成后清理。前端只收到 STL 和用户可调参数。开发与预览由 Vite 转发 `/api`，不开放跨域。构建完成后也可由 FastAPI 直接提供 `dist`，详情见 README 与 `PART-PREVIEW.md`。
 
 ## 七阶段
 
@@ -63,7 +63,7 @@ FastAPI 提供 `/api/health`、`/api/published-templates`、`/api/published-temp
 - 连接和接口在内存中使用 `{ memberId, interfaceId }`。标识含点号也不会被错误拆分。
 - 删除成员清理关联连接、对外接口和参数绑定；保留槽位定义，将其占用清空。必填空槽位会在验证中失败。
 - 位置使用毫米、旋转使用弧度，工程坐标为右手 Z 向上。正式模型加载时，在 viewport 边界明确处理文件单位与坐标，不能修改工程定义来适配显示。
-- reducer 支持新增/编辑/删除成员、新增连接和对外接口，以及删除成员时的关联清理；当前仅接入发布包预览，加入装配尚未接入，因此不会创建示例成员来代替真实零部件。
+- reducer 支持新增/编辑/删除成员、新增连接和对外接口，以及删除成员时的关联清理；已接入发布模板本地模型预览，但预览选择仍不等于加入装配，也不会创建示例成员来代替真实零部件。
 
 ## 验证与导出
 
@@ -79,6 +79,6 @@ MCP `/mcp` 与 REST 共用 `DraftRepository`、HTTP 客户端和预览缓存，M
 
 ## 下一步扩展位置
 
-模板包预览的服务端能力位于 `backend/app/preview.py`，前端 `library` 接收参数、接口及模型信息。下一步“加入装配”应映射已解析定义并明确发出 `member.add`；点击预览始终不修改工程文档。原始接口契约保留在预览描述中，不能用接口名称推断装配位置。
+发布包完整性与兼容 STL 预览位于 `backend/app/preview.py`，本地重建位于 `backend/app/reconstruction.py`，固定 CAD 引擎快照位于 `backend/engine/`；前端 `library` 管理参数、请求取消和模型资源。下一步“加入装配”应映射已解析定义并明确发出 `member.add`；点击预览始终不修改工程文档。原始接口契约保留在发布定义中，不能用接口名称推断装配位置。
 
 真实模型已接入 `viewport`。成员变换、接口求解、参数求值属于工程能力，应通过工作台协调和领域操作写回数据。正式发布另接发布服务，不用本地 JSON 下载代替发布。
