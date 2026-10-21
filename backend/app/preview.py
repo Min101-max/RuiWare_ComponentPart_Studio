@@ -98,7 +98,7 @@ async def download(client: httpx.AsyncClient, settings: Settings, path: str, lim
         return bytes(content)
 
 
-def read_package(data: bytes, publication: PublishedTemplate) -> tuple[list[dict], list[dict], dict, bytes | None]:
+def read_package(data: bytes, publication: PublishedTemplate, *, require_model: bool = True) -> tuple[list[dict], list[dict], dict | None, bytes | None]:
     if len(data) != publication.size or hashlib.sha256(data).hexdigest() != publication.sha256.lower():
         raise LibraryError(502, "PACKAGE_INTEGRITY_ERROR")
     try:
@@ -136,10 +136,14 @@ def read_package(data: bytes, publication: PublishedTemplate) -> tuple[list[dict
             if any(not isinstance(items, list) or not all(isinstance(item, dict) for item in items) for items in [parameters, interfaces]):
                 raise ValueError("invalid definitions")
             artifacts = outputs.get("artifacts")
-            if outputs.get("success") is not True or not isinstance(artifacts, list):
+            if not isinstance(artifacts, list) or (require_model and outputs.get("success") is not True):
+                if not require_model:
+                    return parameters, interfaces, None, None
                 raise LibraryError(422, "MODEL_MISSING")
             models = [item for item in artifacts if isinstance(item, dict) and item.get("kind") == "stl"]
             if len(models) != 1:
+                if not require_model:
+                    return parameters, interfaces, None, None
                 raise LibraryError(422, "MODEL_MISSING")
             model = models[0]
             if not isinstance(model.get("sha256"), str) or not re.fullmatch(SHA256, model["sha256"]):

@@ -1,6 +1,14 @@
 # 发布包模型预览契约
 
-组件平台只读消费已发布 `.rwpart`（ZIP），不修改源模板、不重新编译旧版本。当前预览不会加入装配或改变草稿修订。
+组件平台只读消费已发布 `.rwpart`（ZIP），不修改源模板或发布记录。点击模板后，组件平台在本机从包内参数、规则、材料和几何定义生成预览模型；用户只看到最终模型和模板允许调整的参数。该预览不会加入装配或改变草稿修订。
+
+## 本地模型重建
+
+发布包无需携带 STL。包内需提供 `manifest.json`、`parameters.json`、`geometry-recipe.json`、`feature-rules.json`、`constraints.json`、`sweep-path.json`、`interfaces.json`、`variants.json`、`material-requirements.json`、`material-validation.json`、`evidence.json` 和 `admission.json`。组件平台校验整包 SHA-256 后，把这些定义映射到随项目部署的 CAD 引擎，在独立子进程中生成 STL；生成结果只用于当前预览，不会回写发布库。
+
+`GET /api/published-templates/{publicationId}/reconstruction?sha256={整包哈希}` 返回固定版本和可调整参数。只有 `exposed=true`、用户输入来源且作用域为模板或零件实例的参数可调整；常量、公式和材料绑定参数不向用户开放。`POST /api/published-templates/{publicationId}/reconstruction/model?sha256={整包哈希}` 使用 `{ "parameters": { "length": 120 } }` 生成 STL。后端限制请求体 64 KiB、单个重建并发，CAD 子进程 90 秒超时，返回 `X-RuiWare-SHA256` 校验模型字节。每次生成在 `.runtime` 下使用隔离临时目录，完成后清理。
+
+组件平台运行环境需安装 `backend/requirements.txt` 中的 NumPy 与 `cadquery-ocp`。Windows 一键启动会根据依赖文件变化自动安装或更新依赖。重建失败时不会用包内或旧地址的 STL 掩盖失败；页面只显示简明的用户提示。
 
 ## 发布包要求
 
@@ -32,7 +40,7 @@ geometry/preview.stl
 
 ## API
 
-`GET /api/published-templates/{publicationId}/preview?sha256={整包哈希}` 返回：
+保留的兼容预览接口 `GET /api/published-templates/{publicationId}/preview?sha256={整包哈希}` 返回：
 
 - `publication`：固定发布记录。
 - `unitSystem/coordinateSystem`：单位与工程坐标。

@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from .components.router import router as draft_router
 from .components.service import ComponentError
 from .library import LibraryError, router
 from .preview import PreviewCache, router as preview_router
+from .reconstruction import router as reconstruction_router
 from .mcp.server import MCPAccess, create_mcp
 
 
@@ -35,6 +37,7 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.settings = resolved_settings
         app.state.preview_cache = PreviewCache()
+        app.state.reconstruction_slots = asyncio.Semaphore(1)
         app.state.drafts = DraftRepository(draft_db or resolved_settings.draft_db)
         async with httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False, transport=transport) as client:
             app.state.http = client
@@ -59,6 +62,7 @@ def create_app(
 
     app.include_router(router)
     app.include_router(preview_router)
+    app.include_router(reconstruction_router)
     app.include_router(draft_router)
     app.router.routes.append(Route("/mcp", endpoint=MCPAccess(mcp_http, app), methods=["GET", "POST", "DELETE"]))
 
