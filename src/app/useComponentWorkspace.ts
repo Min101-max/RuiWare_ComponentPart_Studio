@@ -3,6 +3,7 @@ import type { ComponentAction } from "../domain/componentReducer";
 import { SharedDraftController, httpDraftApi, initialSharedState } from "./sharedDraft";
 import type { PublishedTemplate } from "../library/publishedLibrary";
 import type { StageId } from "./stages";
+import { exportEvidenceFiles } from "../domain/evidenceStore";
 
 const initialMessage = "左侧可浏览已发布零部件，点击模板预览模型和版本信息";
 
@@ -100,7 +101,8 @@ export function useComponentWorkspace() {
     let exported;
     try { exported = await controller.current?.export(); if (!exported) return; }
     catch { setMessage("导出失败，请先确认草稿已保存并处理同步问题。"); return; }
-    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" });
+    const packageWithEvidence = { ...exported as object, evidenceFiles: await exportEvidenceFiles(document.definition.evidence) };
+    const blob = new Blob([JSON.stringify(packageWithEvidence, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = window.document.createElement("a");
     const filename = document.definition.name.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_") || "组件模板";
@@ -111,8 +113,9 @@ export function useComponentWorkspace() {
     setMessage("组件草稿已导出，正式发布尚未接入");
   }
 
-  function downloadLocalDraft() {
-    const blob = new Blob([JSON.stringify(document, null, 2)], { type: "application/json" });
+  async function downloadLocalDraft() {
+    const backupWithEvidence = { ...document, evidenceFiles: await exportEvidenceFiles(document.definition.evidence) };
+    const blob = new Blob([JSON.stringify(backupWithEvidence, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = window.document.createElement("a");
     link.href = url;

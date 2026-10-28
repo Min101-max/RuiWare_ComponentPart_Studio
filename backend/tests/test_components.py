@@ -146,6 +146,31 @@ console.log(JSON.stringify({document:result,checks:validateComponent(result),exp
             self.assertEqual(client.post("/api/component-drafts", json={"document": invalid}).status_code, 422)
             self.assertEqual(self.action(client, imported, {"type": "definition.patch", "patch": {"name": None}}).status_code, 422)
 
+    def test_definition_extensions_persist_and_export(self):
+        patch = {
+            "projectCode": "RACK-2026-01", "owner": "张工", "organization": "研发部",
+            "searchTags": ["横梁", "可调"],
+            "connectionForms": {
+                "internal": {"mode": "preset", "value": "螺栓连接", "details": "M8 紧固"},
+                "interComponent": {"mode": "custom", "value": "挂钩插接", "details": "免工具拆装"},
+            },
+            "designConstraints": "跨度不超过 2400 mm", "evidence": [{
+                "id": "e1", "name": "安装参考.png", "mediaType": "image/png", "size": 1024,
+                "addedAt": "2026-10-28T00:00:00.000Z",
+            }],
+        }
+        with TestClient(create_app(dist_dir=None)) as client:
+            draft = self.create(client)
+            updated = self.action(client, draft, {"type": "definition.patch", "patch": patch})
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(updated.json()["document"]["definition"]["projectCode"], "RACK-2026-01")
+            persisted = client.get(f"/api/component-drafts/{draft['draftId']}").json()
+            self.assertEqual(persisted["document"]["definition"]["connectionForms"]["interComponent"]["mode"], "custom")
+            self.assertEqual(persisted["document"]["definition"]["evidence"][0]["name"], "安装参考.png")
+            exported = client.get(f"/api/component-drafts/{draft['draftId']}/export").json()
+            self.assertEqual(exported["stages"]["definition"]["searchTags"], ["横梁", "可调"])
+            self.assertEqual(exported["stages"]["definition"]["designConstraints"], "跨度不超过 2400 mm")
+
     def test_two_repository_instances_cannot_both_commit_same_revision(self):
         from concurrent.futures import ThreadPoolExecutor
         from threading import Barrier
