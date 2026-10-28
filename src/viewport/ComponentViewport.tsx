@@ -15,6 +15,7 @@ function PreviewScene({ geometry }: { geometry: BufferGeometry | null }) {
   const radius = geometry?.boundingSphere?.radius || 8;
   const center = geometry?.boundingSphere?.center || new Vector3();
   const section = 10 ** Math.floor(Math.log10(radius));
+  const maxDistance = radius * 100;
 
   useEffect(() => {
     const viewCamera = camera as PerspectiveCamera;
@@ -35,16 +36,18 @@ function PreviewScene({ geometry }: { geometry: BufferGeometry | null }) {
   }, [geometry, camera, size.width, size.height]);
 
   return <>
-    <Grid key={section} args={[section * 40, section * 40]} position={[center.x, center.y, geometry?.boundingBox?.min.z || 0]} rotation={[Math.PI / 2, 0, 0]} cellSize={section / 5} cellThickness={.5} sectionSize={section} sectionThickness={1}/>
+    {/* Keep the floor visible beneath the model throughout the permitted zoom range. */}
+    <Grid key={section} args={[section * 40, section * 40]} position={[center.x, center.y, geometry?.boundingBox?.min.z || 0]} rotation={[Math.PI / 2, 0, 0]} cellSize={section / 5} cellThickness={.5} sectionSize={section} sectionThickness={1} fadeDistance={maxDistance * 2} cellColor="#c0c8d0" sectionColor="#8da6be" side={DoubleSide}/>
     {geometry && <mesh><primitive object={geometry} attach="geometry" dispose={null}/><meshStandardMaterial color="#7394b0" metalness={.18} roughness={.55} side={DoubleSide}/></mesh>}
-    <OrbitControls ref={controls} makeDefault minDistance={radius / 100} maxDistance={radius * 100}/>
+    <OrbitControls ref={controls} makeDefault minDistance={radius / 100} maxDistance={maxDistance}/>
   </>;
 }
 
 type Props = { members: ComponentMember[]; mateCount: number; previewTemplate: PublishedTemplate | null };
 
 export function ComponentViewport({ members, mateCount, previewTemplate }: Props) {
-  const preview = useTemplatePreview(previewTemplate);
+  const isComponent = previewTemplate?.templateKind === "component";
+  const preview = useTemplatePreview(isComponent ? null : previewTemplate);
   const loaded = preview.result;
   return <section className="viewport" aria-label="组件三维视图">
     <div className="viewport-toolbar"><button className="tool active" type="button"><Eye size={15}/>预览</button><span>拖拽视图旋转 · 滚轮缩放</span><span className="view-status">{members.length} 个成员 · {mateCount} 个连接</span></div>
@@ -52,10 +55,10 @@ export function ComponentViewport({ members, mateCount, previewTemplate }: Props
       <color attach="background" args={["#f5f7f9"]}/><ambientLight intensity={1.8}/><directionalLight position={[4, 6, 5]} intensity={2}/>
       <PreviewScene geometry={loaded?.geometry || null}/>
     </Canvas></div>
-    {!loaded && <div className={`empty-overlay ${preview.error ? "preview-error" : ""}`} role="status" data-preview-state={preview.error ? "error" : previewTemplate ? "loading" : "idle"}>
-      {preview.error ? <AlertTriangle size={30}/> : previewTemplate ? <RefreshCw size={30} className="spinning"/> : <Boxes size={30}/>}
+    {!loaded && <div className={`empty-overlay ${preview.error ? "preview-error" : ""}`} role="status" data-preview-state={preview.error ? "error" : isComponent ? "unavailable" : previewTemplate ? "loading" : "idle"}>
+      {preview.error ? <AlertTriangle size={30}/> : previewTemplate && !isComponent ? <RefreshCw size={30} className="spinning"/> : <Boxes size={30}/>}
       <b>{previewTemplate ? previewTemplate.name : members.length ? "组件成员模型尚未加载" : "浏览已发布零部件"}</b>
-      <span>{preview.error || (previewTemplate ? "正在准备模型…" : "点击左侧模板预览零件")}</span>
+      <span>{isComponent ? "此组件暂无可显示的模型，可从发布详情加入当前组件。" : preview.error || (previewTemplate ? "正在准备模型…" : "点击左侧模板预览零件")}</span>
       {preview.error && <button type="button" className="ghost" onClick={preview.retry}>重试</button>}
     </div>}
     {loaded && previewTemplate && <div className="preview-caption" role="status" data-preview-state={preview.loading ? "loading" : "ready"}>

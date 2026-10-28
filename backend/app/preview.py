@@ -124,7 +124,7 @@ def read_package(data: bytes, publication: PublishedTemplate, *, require_model: 
                     raise ValueError("invalid document")
                 return body
 
-            manifest, outputs = document("manifest.json"), document("outputs.json")
+            manifest = document("manifest.json")
             if manifest.get("schemaVersion") != "3.0" or manifest.get("unitSystem") != "mm-kg-s" or manifest.get("coordinateSystem") != "right-handed-z-up":
                 raise LibraryError(422, "PACKAGE_UNSUPPORTED")
             if manifest.get("id") != publication.templateId or manifest.get("code") != publication.code:
@@ -135,6 +135,9 @@ def read_package(data: bytes, publication: PublishedTemplate, *, require_model: 
             interfaces = interfaces.get("interfaces")
             if any(not isinstance(items, list) or not all(isinstance(item, dict) for item in items) for items in [parameters, interfaces]):
                 raise ValueError("invalid definitions")
+            if not require_model:
+                return parameters, interfaces, None, None
+            outputs = document("outputs.json")
             artifacts = outputs.get("artifacts")
             if not isinstance(artifacts, list) or (require_model and outputs.get("success") is not True):
                 if not require_model:
@@ -185,11 +188,21 @@ async def read_publication(client: httpx.AsyncClient, settings: Settings, public
 
 
 async def read_preview(client: httpx.AsyncClient, settings: Settings, cache: PreviewCache,
-                       publication_id: str, expected_hash: str | None) -> CachedPreview:
+                       publication_id: str, expected_hash: str | None, *, storage=None, library_cache=None) -> CachedPreview:
     prefix = "/api/public/v1/templates/" + quote(publication_id, safe="")
+    # The SQLite package cache is tied to the shared MinIO publication source.
+    # When MinIO is not configured, keep the legacy HTTP path fully isolated
+    # from any historical cache rows left by an earlier configuration.
+    cache_enabled = storage is not None and storage.client is not None and library_cache is not None
     try:
         async with asyncio.timeout(DOWNLOAD_TIMEOUT_SECONDS):
-            publication = await read_publication(client, settings, publication_id, expected_hash)
+            publication = library_cache.publication(publication_id, expected_hash) if cache_enabled else None
+            record = None
+            if publication is None and storage is not None and storage.client is not None:
+                record = await asyncio.to_thread(storage.record, "part", publication_id, expected_hash)
+                publication = record.publication
+            if publication is None:
+                publication = await read_publication(client, settings, publication_id, expected_hash)
             key = publication_id, publication.sha256.lower()
             async with cache.slots:
                 cached = cache.get(key)
@@ -197,7 +210,16 @@ async def read_preview(client: httpx.AsyncClient, settings: Settings, cache: Pre
                     return cached
                 if publication.size > MAX_DOWNLOAD_BYTES:
                     raise LibraryError(502, "PACKAGE_TOO_LARGE")
-                body = await download(client, settings, prefix + "/download", MAX_DOWNLOAD_BYTES)
+                body = library_cache.package(publication) if cache_enabled else None
+                if body is None:
+                    if record is None and storage is not None and storage.client is not None:
+                        record = await asyncio.to_thread(storage.record, "part", publication_id, publication.sha256)
+                    if record is not None:
+                        body = await asyncio.to_thread(storage.package, record)
+                    else:
+                        body = await download(client, settings, prefix + "/download", MAX_DOWNLOAD_BYTES)
+                    if cache_enabled:
+                        library_cache.save_package(publication, body)
                 parameters, interfaces, model, stl = await asyncio.to_thread(read_package, body, publication)
                 source = "package"
                 if stl is None:
@@ -224,7 +246,8 @@ async def read_preview(client: httpx.AsyncClient, settings: Settings, cache: Pre
 
 async def load_preview(request: Request, publication_id: str, expected_hash: str | None) -> CachedPreview:
     return await read_preview(request.app.state.http, request.app.state.settings, request.app.state.preview_cache,
-                              publication_id, expected_hash)
+                              publication_id, expected_hash, storage=getattr(request.app.state, "published_storage", None),
+                              library_cache=getattr(request.app.state, "library_cache", None))
 
 
 router = APIRouter(prefix="/api/published-templates", tags=["模型预览"])

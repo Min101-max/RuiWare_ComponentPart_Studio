@@ -3,10 +3,43 @@ from urllib.parse import quote
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from .models import ActionRequest, CreateDraftRequest
+from .models import ActionRequest, ComponentDocument, CreateDraftRequest, PublishRequest
+from .service import serialize_component
 
 
 router = APIRouter(prefix="/api/component-drafts", tags=["组件草稿"])
+publication_router = APIRouter(prefix="/api/published-components", tags=["组件发布库"])
+
+
+@publication_router.get("")
+def list_publications(request: Request):
+    return JSONResponse(request.app.state.publications.list(), headers={"Cache-Control": "no-store"})
+
+
+@publication_router.get("/{publication_id}")
+def publication(request: Request, publication_id: str):
+    cached = request.app.state.library_cache.publication(publication_id, kind='component')
+    if cached:
+        payload = request.app.state.library_cache.package(cached)
+        if payload is not None:
+            return JSONResponse(request.app.state.publications._parse_package(payload, cached.model_dump(exclude_unset=True)), headers={"Cache-Control": "no-store"})
+    return JSONResponse(request.app.state.publications.detail(publication_id), headers={"Cache-Control": "no-store"})
+
+
+@publication_router.get("/{publication_id}/download")
+def publication_download(request: Request, publication_id: str):
+    cached = request.app.state.library_cache.publication(publication_id, kind='component')
+    payload = request.app.state.library_cache.package(cached) if cached else None
+    if payload is None:
+        payload = request.app.state.publications.package(publication_id)
+    return Response(payload, media_type="application/octet-stream", headers={
+        "Content-Disposition": f'attachment; filename="{publication_id}.rwpart"', "Cache-Control": "no-store",
+    })
+
+
+@router.post("/{draft_id}/publish")
+def publish_draft(request: Request, draft_id: str, body: PublishRequest):
+    return JSONResponse(request.app.state.publications.publish(draft_id, body.expectedRevision), headers={"Cache-Control": "no-store"})
 
 
 @router.get("")
