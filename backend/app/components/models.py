@@ -95,11 +95,40 @@ class ComponentRule(ComponentModel):
     expression: str
 
 
+class ConnectionMethod(ComponentModel):
+    mode: Literal["preset", "custom"]
+    value: str
+    details: str
+
+
+class EvidenceAttachment(ComponentModel):
+    id: str
+    name: str
+    mediaType: str
+    size: Annotated[int, Field(strict=True, ge=0)]
+    addedAt: str
+
+
+class ComponentConnectionForms(ComponentModel):
+    internal: ConnectionMethod
+    interComponent: ConnectionMethod
+
+
 class ComponentDefinition(ComponentModel):
     name: str
     code: str
     category: str
     description: str
+    projectCode: str = ""
+    owner: str = ""
+    organization: str = ""
+    searchTags: list[str] = Field(default_factory=list)
+    connectionForms: ComponentConnectionForms = Field(default_factory=lambda: ComponentConnectionForms(
+        internal=ConnectionMethod(mode="preset", value="螺栓连接", details=""),
+        interComponent=ConnectionMethod(mode="preset", value="插接/卡扣", details=""),
+    ))
+    designConstraints: str = ""
+    evidence: list[EvidenceAttachment] = Field(default_factory=list)
 
 
 class Assembly(ComponentModel):
@@ -136,6 +165,13 @@ class DefinitionPatch(PatchModel):
     code: str | None = None
     category: str | None = None
     description: str | None = None
+    projectCode: str | None = None
+    owner: str | None = None
+    organization: str | None = None
+    searchTags: list[str] | None = None
+    connectionForms: ComponentConnectionForms | None = None
+    designConstraints: str | None = None
+    evidence: list[EvidenceAttachment] | None = None
 
 
 class MemberPatch(PatchModel):
