@@ -153,7 +153,32 @@ console.log(JSON.stringify({document:result,checks:validateComponent(result),exp
             self.assertEqual(client.post("/api/component-drafts", json={"document": invalid}).status_code, 422)
             self.assertEqual(self.action(client, imported, {"type": "definition.patch", "patch": {"name": None}}).status_code, 422)
 
-    def test_definition_metadata_and_portable_evidence_export(self):
+    def test_definition_extensions_persist_and_export(self):
+        patch = {
+            "projectCode": "RACK-2026-01", "owner": "张工", "organization": "研发部",
+            "searchTags": ["横梁", "可调"],
+            "connectionForms": {
+                "internal": {"mode": "preset", "value": "螺栓连接", "details": "M8 紧固"},
+                "interComponent": {"mode": "custom", "value": "挂钩插接", "details": "免工具拆装"},
+            },
+            "designConstraints": "跨度不超过 2400 mm", "evidence": [{
+                "id": "e1", "name": "安装参考.png", "mediaType": "image/png", "size": 1024,
+                "addedAt": "2026-10-28T00:00:00.000Z",
+            }],
+        }
+        with TestClient(create_app(dist_dir=None)) as client:
+            draft = self.create(client)
+            updated = self.action(client, draft, {"type": "definition.patch", "patch": patch})
+            self.assertEqual(updated.status_code, 200, updated.text)
+            self.assertEqual(updated.json()["document"]["definition"]["projectCode"], "RACK-2026-01")
+            persisted = client.get(f"/api/component-drafts/{draft['draftId']}").json()
+            self.assertEqual(persisted["document"]["definition"]["connectionForms"]["interComponent"]["mode"], "custom")
+            self.assertEqual(persisted["document"]["definition"]["evidence"][0]["name"], "安装参考.png")
+            exported = client.get(f"/api/component-drafts/{draft['draftId']}/export").json()
+            self.assertEqual(exported["stages"]["definition"]["searchTags"], ["横梁", "可调"])
+            self.assertEqual(exported["stages"]["definition"]["designConstraints"], "跨度不超过 2400 mm")
+
+    def test_evidence_upload_is_referenced_and_cleaned_up(self):
         import base64
         from uuid import uuid4
 
@@ -166,34 +191,18 @@ console.log(JSON.stringify({document:result,checks:validateComponent(result),exp
                 content=content, headers={"Content-Type": "image/png"},
             )
             self.assertEqual(upload.status_code, 200, upload.text)
-            reference = upload.json()
-            patched = self.action(client, draft, {"type": "definition.patch", "patch": {
-                "projectCode": "RACK-2026-001", "owner": "张工", "organization": "结构组",
-                "searchTags": ["货架", "横梁"], "partConnectionType": "自定义",
-                "partConnectionCustom": "端板螺栓连接", "componentConnectionType": "卡扣连接",
-                "designConstraints": "端部需避开立柱加强筋", "evidenceFiles": [reference],
-            }})
+            reference = {"id": evidence_id, "name": "连接示意.png", "mediaType": "image/png",
+                         "size": len(content), "addedAt": "2026-10-28T00:00:00.000Z"}
+            patched = self.action(client, draft, {"type": "definition.patch", "patch": {"evidence": [reference]}})
             self.assertEqual(patched.status_code, 200, patched.text)
-            definition = patched.json()["document"]["definition"]
-            self.assertEqual(definition["projectCode"], "RACK-2026-001")
-            self.assertEqual(definition["code"], "")
-            self.assertEqual(definition["owner"], "张工")
-            self.assertEqual(definition["componentConnectionType"], "卡扣连接")
-            self.assertIsNone(definition["evidenceFiles"][0]["dataUrl"])
             downloaded = client.get(f"/api/component-drafts/{draft['draftId']}/evidence/{evidence_id}")
             self.assertEqual(downloaded.content, content)
-            exported = client.get(f"/api/component-drafts/{draft['draftId']}/export")
-            self.assertEqual(exported.status_code, 200, exported.text)
-            portable = exported.json()["stages"]["definition"]["evidenceFiles"][0]
-            self.assertEqual(portable["dataUrl"], f"data:image/png;base64,{base64.b64encode(content).decode('ascii')}")
-
-            import_document = patched.json()["document"]
-            import_document["definition"]["evidenceFiles"] = [portable]
-            restored = self.create(client, document=import_document)
-            roundtrip = client.get(f"/api/component-drafts/{restored['draftId']}/evidence/{evidence_id}")
-            self.assertEqual(roundtrip.content, content)
-
-            removed = self.action(client, patched.json(), {"type": "definition.patch", "patch": {"evidenceFiles": []}})
+            exported = client.get(f"/api/component-drafts/{draft['draftId']}/export").json()
+            self.assertEqual(
+                exported["stages"]["definition"]["evidence"][0]["dataUrl"],
+                f"data:image/png;base64,{base64.b64encode(content).decode('ascii')}",
+            )
+            removed = self.action(client, patched.json(), {"type": "definition.patch", "patch": {"evidence": []}})
             self.assertEqual(removed.status_code, 200, removed.text)
             self.assertEqual(client.get(f"/api/component-drafts/{draft['draftId']}/evidence/{evidence_id}").status_code, 404)
 

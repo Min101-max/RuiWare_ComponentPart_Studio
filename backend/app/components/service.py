@@ -24,9 +24,11 @@ def create_component_document() -> ComponentDocument:
         "definition": {
             "name": "横梁组件", "code": "", "category": "货架组件", "description": "由多个已发布零部件组成的可复用组件模板",
             "projectCode": "", "owner": "", "organization": "", "searchTags": [],
-            "partConnectionType": "螺栓连接", "partConnectionCustom": "",
-            "componentConnectionType": "螺栓连接", "componentConnectionCustom": "",
-            "designConstraints": "", "evidenceFiles": [],
+            "connectionForms": {
+                "internal": {"mode": "preset", "value": "螺栓连接", "details": ""},
+                "interComponent": {"mode": "preset", "value": "插接/卡扣", "details": ""},
+            },
+            "designConstraints": "", "evidence": [],
         },
         "assembly": {"members": [], "mates": []}, "ports": [], "slots": [], "bindings": [],
         "parameters": [{"id": "componentLength", "label": "组件总长", "value": 2400, "unit": "mm", "min": 1000, "max": 6000}],

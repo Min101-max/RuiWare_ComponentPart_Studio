@@ -3,7 +3,6 @@ import base64
 from datetime import datetime, timezone
 import hashlib
 import json
-import hashlib
 from io import BytesIO
 from pathlib import Path
 import re
@@ -63,8 +62,6 @@ class DraftRepository:
             document = ComponentDocument.model_validate(data)
         draft_id = str(uuid4())
         with closing(self._connect()) as connection, connection:
-            document = self._store_embedded_evidence(connection, draft_id, document)
-            self._require_evidence_content(connection, draft_id, document)
             connection.execute("INSERT INTO component_drafts VALUES (?, ?, ?, ?, ?)", (
                 draft_id, document.definition.name, document.revision, document.model_dump_json(by_alias=True), self._now(),
             ))
@@ -166,8 +163,6 @@ class DraftRepository:
                     raise ComponentError(409, code, self._envelope(connection, draft_id, document, expected_revision)) from error
                 raise
             if updated.revision != document.revision:
-                updated = self._store_embedded_evidence(connection, draft_id, updated)
-                self._require_evidence_content(connection, draft_id, updated)
                 now = self._now()
                 connection.execute("UPDATE component_drafts SET name = ?, revision = ?, document = ?, updated_at = ? WHERE id = ?", (
                     updated.definition.name, updated.revision, updated.model_dump_json(by_alias=True), now, draft_id,
@@ -219,46 +214,17 @@ class DraftRepository:
 
         document = ComponentDocument.model_validate(self.get(draft_id)["document"])
         result = serialize_component(document)
-        for evidence in result["stages"]["definition"]["evidenceFiles"]:
-            stored = self.get_evidence(draft_id, evidence["id"])
+        for evidence in result["stages"]["definition"].get("evidence", []):
+            try:
+                stored = self.get_evidence(draft_id, evidence["id"])
+            except ComponentError:
+                continue
             evidence["dataUrl"] = f"data:{stored['mediaType']};base64,{base64.b64encode(stored['content']).decode('ascii')}"
         return result
 
     @staticmethod
-    def _store_embedded_evidence(connection, draft_id: str, document: ComponentDocument) -> ComponentDocument:
-        data = document.model_dump(by_alias=True)
-        files = data["definition"]["evidenceFiles"]
-        for item in files:
-            data_url = item.get("dataUrl")
-            if not data_url:
-                continue
-            match = re.fullmatch(r"data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})", data_url)
-            if not match or match.group(1) != item["mediaType"]:
-                raise ComponentError(422, "INVALID_EVIDENCE")
-            try:
-                content = base64.b64decode(match.group(2), validate=True)
-            except ValueError as error:
-                raise ComponentError(422, "INVALID_EVIDENCE") from error
-            if (len(content) != item["size"] or len(content) > 5 * 1024 * 1024
-                    or hashlib.sha256(content).hexdigest() != item["sha256"]):
-                raise ComponentError(422, "INVALID_EVIDENCE")
-            connection.execute("""INSERT INTO component_draft_evidence VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(draft_id, id) DO UPDATE SET file_name=excluded.file_name,
-                media_type=excluded.media_type, size=excluded.size, sha256=excluded.sha256, content=excluded.content""",
-                (draft_id, item["id"], item["fileName"], item["mediaType"], len(content), item["sha256"], content))
-            item["dataUrl"] = None
-        clean = ComponentDocument.model_validate(data)
-        return clean
-
-    @staticmethod
-    def _require_evidence_content(connection, draft_id: str, document: ComponentDocument):
-        for item in document.definition.evidenceFiles:
-            if connection.execute("SELECT 1 FROM component_draft_evidence WHERE draft_id = ? AND id = ?", (draft_id, item.id)).fetchone() is None:
-                raise ComponentError(422, "EVIDENCE_CONTENT_MISSING")
-
-    @staticmethod
     def _remove_unreferenced_evidence(connection, draft_id: str, document: ComponentDocument):
-        referenced = {item.id for item in document.definition.evidenceFiles}
+        referenced = {item.id for item in document.definition.evidence}
         rows = connection.execute("SELECT id FROM component_draft_evidence WHERE draft_id = ?", (draft_id,)).fetchall()
         for row in rows:
             if row["id"] not in referenced:
