@@ -6,8 +6,8 @@ import type { PublishedTemplate } from "./publishedLibrary";
 const formatDate = (value: string) => new Date(value).toLocaleString("zh-CN", { hour12: false });
 const formatSize = (size: number) => size < 1024 ? `${size} B` : size < 1024 ** 2 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1024 ** 2).toFixed(1)} MB`;
 
-export function PublishedTemplateLibrary({ onPreview, onAdd, memberPublicationIds = [], selectionResetToken, refreshToken, addDisabled }: {
-  onPreview: (template: PublishedTemplate) => void; onAdd: (template: PublishedTemplate) => void;
+export function PublishedTemplateLibrary({ onPreview, onAdd, onDragTemplate, memberPublicationIds = [], selectionResetToken, refreshToken, addDisabled }: {
+  onPreview: (template: PublishedTemplate) => void; onAdd: (template: PublishedTemplate) => void; onDragTemplate?: (template: PublishedTemplate | null) => void;
   memberPublicationIds?: string[];
   selectionResetToken: number; refreshToken: number; addDisabled: boolean;
 }) {
@@ -79,7 +79,7 @@ export function PublishedTemplateLibrary({ onPreview, onAdd, memberPublicationId
     <div aria-busy={loading}>{visible.map(item => {
       const added = memberPublicationIds.includes(item.publicationId);
       return <Fragment key={publicationKey(item)}><div className="publication-card-row">
-      <button className={`part-card publication-card ${selectedId === publicationKey(item) ? "selected" : ""}`} onClick={() => { setSelectedId(current => current === publicationKey(item) ? null : publicationKey(item)); onPreview(item); }} aria-pressed={selectedId === publicationKey(item)}>
+      <button className={`part-card publication-card ${selectedId === publicationKey(item) ? "selected" : ""}`} draggable={!addDisabled} onDragStart={event => { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData("text/plain", item.publicationId); onDragTemplate?.(item); }} onDragEnd={() => onDragTemplate?.(null)} onClick={() => { setSelectedId(current => current === publicationKey(item) ? null : publicationKey(item)); onPreview(item); }} aria-pressed={selectedId === publicationKey(item)} title="拖动到三维画布以加入组件">
       <i/><span><b>{item.name}</b><small>{item.templateKind === "component" ? "组件" : "零部件"} · {item.code} · V{item.version}</small><small>{formatDate(item.createdAt)}</small></span>
     </button>
     <button className="publication-add" type="button" disabled={added || addDisabled} onClick={() => onAdd(item)} aria-label={added ? `已加入 ${item.name}` : `加入 ${item.name}`} title={added ? "已加入组件" : "加入组件"}><Plus size={16}/></button></div>

@@ -157,6 +157,27 @@ def editable_parameters(draft_data: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def resolved_interfaces(draft_data: dict[str, Any], material: dict[str, Any], overrides: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve interface occurrences with the same engine context used for model reconstruction."""
+    from backend.engine.template_core import TemplateDraft
+    from backend.engine.template_core.rules import evaluate_template
+
+    draft = TemplateDraft.model_validate(draft_data)
+    external_context = {
+        "material": material.get("record", material),
+        "product": material.get("product", {}),
+        "component": material.get("component", {}),
+        "projectZone": material.get("projectZone", {}),
+        "standard": material.get("standard", {}),
+    }
+    evaluation = evaluate_template(
+        draft.parameterDefinitions, draft.featureRules,
+        overrides=overrides or {}, external_context=external_context,
+        semantic_faces=draft.geometryRecipe.semanticFaces, interfaces=draft.interfaces,
+    )
+    return [item.model_dump(mode="json") for item in evaluation.resolvedInterfaces], [item.model_dump(mode="json") for item in evaluation.diagnostics]
+
+
 def _run_worker(draft_data: dict[str, Any], material: dict[str, Any], overrides: dict[str, Any]) -> bytes:
     from backend.engine.template_core import TemplateDraft, lower_to_plan
 
@@ -288,14 +309,45 @@ async def template_availability(publication_id: str, request: Request, response:
 
 @router.get("/{publication_id}/reconstruction", summary="读取模板参数")
 async def reconstruction_info(publication_id: str, request: Request, response: Response,
-                              sha256: str | None = Query(default=None, pattern=SHA256)):
+                              sha256: str | None = Query(default=None, pattern=SHA256),
+                              parameters: str = Query(default="{}", max_length=MAX_REQUEST_BYTES)):
+    try:
+        overrides = json.loads(parameters, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    except (ValueError, TypeError, RecursionError):
+        raise LibraryError(422, "PARAMETER_INVALID") from None
+    if not isinstance(overrides, dict) or len(overrides) > 64 or any(not isinstance(key, str) or len(key) > 128 for key in overrides):
+        raise LibraryError(422, "PARAMETER_INVALID")
     async with request.app.state.reconstruction_slots:
-        publication, draft, _ = await _read_template(request, publication_id, sha256)
+        publication, draft, material = await _read_template(request, publication_id, sha256)
+    definitions = {item["id"]: item for item in editable_parameters(draft)}
+    for key, value in overrides.items():
+        definition = definitions.get(key)
+        if definition is None:
+            raise LibraryError(422, "PARAMETER_INVALID")
+        value_type = definition["valueType"]
+        if value_type in {"number", "integer"}:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or (isinstance(value, float) and not math.isfinite(value)) or (isinstance(value, int) and abs(value) > 1e308):
+                raise LibraryError(422, "PARAMETER_INVALID")
+            if value_type == "integer" and isinstance(value, float) and not value.is_integer():
+                raise LibraryError(422, "PARAMETER_INVALID")
+            if definition["minimum"] is not None and value < definition["minimum"]:
+                raise LibraryError(422, "PARAMETER_INVALID")
+            if definition["maximum"] is not None and value > definition["maximum"]:
+                raise LibraryError(422, "PARAMETER_INVALID")
+        elif value_type == "boolean":
+            if not isinstance(value, bool):
+                raise LibraryError(422, "PARAMETER_INVALID")
+        elif not isinstance(value, str) or (definition["allowedValues"] and value not in definition["allowedValues"]):
+            raise LibraryError(422, "PARAMETER_INVALID")
+    resolved, diagnostics = await asyncio.to_thread(resolved_interfaces, draft, material, overrides)
     response.headers["Cache-Control"] = "no-store"
     return {
         "publication": publication.model_dump(mode="json"),
         "parameters": editable_parameters(draft),
         "interfaces": draft.get("interfaces", []),
+        "resolvedInterfaces": resolved,
+        "resolvedInterfacesAvailable": True,
+        "interfaceDiagnostics": diagnostics,
     }
 
 
