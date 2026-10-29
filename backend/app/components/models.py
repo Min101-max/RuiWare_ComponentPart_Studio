@@ -33,6 +33,36 @@ class PartInterface(ComponentModel):
     name: str
     type: Literal["plane", "axis", "point"]
     tags: list[str]
+    declarationMode: Literal["staticGeometry", "featureDerived"] | None = None
+    interfaceType: Literal["locating", "connecting", "supporting", "adjustable", "processDatum", "other"] | None = None
+    locatingType: Literal["planeContact", "axisCoincident", "pinHole", "edgeStop", "slotAdjustable", "keyedAntiError"] | None = None
+    role: Literal["primary", "secondary", "tertiary"] | None = None
+    geometryRefs: list[str] | None = None
+    parameterRefs: list[str] | None = None
+    description: str | None = None
+    required: bool | None = None
+    connectionGender: Literal["male", "female", "neutral"] | None = None
+    interfaceSize: dict[str, object] | None = None
+    connectionMethod: str | None = None
+    region: dict[str, object] | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_optional_metadata(self, handler):
+        data = handler(self)
+        for field in ("declarationMode", "interfaceType", "locatingType", "role", "geometryRefs", "parameterRefs", "description", "required", "connectionGender", "interfaceSize", "connectionMethod", "region"):
+            if field not in self.model_fields_set:
+                data.pop(field, None)
+        return data
+
+
+class MemberParameterDefinition(ComponentModel):
+    id: str
+    label: str
+    unit: str
+    valueType: Literal["number", "integer", "string", "enum", "boolean"]
+    minimum: Number | None
+    maximum: Number | None
+    default: ParameterValue
 
 
 class ComponentMember(ComponentModel):
@@ -44,7 +74,17 @@ class ComponentMember(ComponentModel):
     position: Vector3
     rotation: Vector3
     parameterValues: dict[str, ParameterValue]
+    parameterDefinitions: list[MemberParameterDefinition] = Field(default_factory=list)
+    resolvedInterfaces: list[dict[str, object]] = Field(default_factory=list)
     interfaces: list[PartInterface]
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_members(self, handler):
+        data = handler(self)
+        for field in ("parameterDefinitions", "resolvedInterfaces"):
+            if field not in self.model_fields_set:
+                data.pop(field, None)
+        return data
 
 
 class InterfaceSource(ComponentModel):
@@ -65,6 +105,18 @@ class ComponentPort(ComponentModel):
     name: str
     source: InterfaceSource
     tags: list[str]
+
+    # Keep the resolved source declaration with the inherited component port.
+    # Older drafts omit this snapshot and remain valid through the custom
+    # serializer below.
+    interface: PartInterface | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_port(self, handler):
+        data = handler(self)
+        if "interface" not in self.model_fields_set:
+            data.pop("interface", None)
+        return data
 
 
 class ComponentSlot(ComponentModel):
@@ -90,9 +142,37 @@ class ParameterBinding(ComponentModel):
     memberParameterId: str
 
 
+class ComponentPattern(ComponentModel):
+    id: str
+    label: str
+    memberIds: list[str]
+    countParameterId: str
+    spacingParameterId: str
+    axis: Literal["x", "y", "z"]
+
+
 class ComponentRule(ComponentModel):
     id: str
     expression: str
+
+
+class ConnectionMethod(ComponentModel):
+    mode: Literal["preset", "custom"]
+    value: str
+    details: str
+
+
+class EvidenceAttachment(ComponentModel):
+    id: str
+    name: str
+    mediaType: str
+    size: Annotated[int, Field(strict=True, ge=0)]
+    addedAt: str
+
+
+class ComponentConnectionForms(ComponentModel):
+    internal: ConnectionMethod
+    interComponent: ConnectionMethod
 
 
 class ComponentDefinition(ComponentModel):
@@ -100,6 +180,16 @@ class ComponentDefinition(ComponentModel):
     code: str
     category: str
     description: str
+    projectCode: str = ""
+    owner: str = ""
+    organization: str = ""
+    searchTags: list[str] = Field(default_factory=list)
+    connectionForms: ComponentConnectionForms = Field(default_factory=lambda: ComponentConnectionForms(
+        internal=ConnectionMethod(mode="preset", value="螺栓连接", details=""),
+        interComponent=ConnectionMethod(mode="preset", value="插接/卡扣", details=""),
+    ))
+    designConstraints: str = ""
+    evidence: list[EvidenceAttachment] = Field(default_factory=list)
 
 
 class Assembly(ComponentModel):
@@ -119,6 +209,7 @@ class ComponentDocument(ComponentModel):
     slots: list[ComponentSlot]
     parameters: list[ComponentParameter]
     bindings: list[ParameterBinding]
+    patterns: list[ComponentPattern] = Field(default_factory=list)
     rules: list[ComponentRule]
 
 
@@ -136,6 +227,13 @@ class DefinitionPatch(PatchModel):
     code: str | None = None
     category: str | None = None
     description: str | None = None
+    projectCode: str | None = None
+    owner: str | None = None
+    organization: str | None = None
+    searchTags: list[str] | None = None
+    connectionForms: ComponentConnectionForms | None = None
+    designConstraints: str | None = None
+    evidence: list[EvidenceAttachment] | None = None
 
 
 class MemberPatch(PatchModel):
@@ -186,6 +284,32 @@ class ParameterValueAction(ComponentModel):
     value: Number | None
 
 
+class ParameterAddAction(ComponentModel):
+    type: Literal["parameter.add"]
+    parameter: ComponentParameter
+
+
+class ParameterRemoveAction(ComponentModel):
+    type: Literal["parameter.remove"]
+    id: str
+
+
+class BindingSetAction(ComponentModel):
+    type: Literal["binding.set"]
+    id: str
+    binding: ParameterBinding | None
+
+
+class PatternAddAction(ComponentModel):
+    type: Literal["pattern.add"]
+    pattern: ComponentPattern
+
+
+class PatternRemoveAction(ComponentModel):
+    type: Literal["pattern.remove"]
+    id: str
+
+
 class RuleExpressionAction(ComponentModel):
     type: Literal["rule.expression"]
     id: str
@@ -194,7 +318,7 @@ class RuleExpressionAction(ComponentModel):
 
 TypedAction = Annotated[
     ResetAction | DefinitionPatchAction | MemberAddAction | MemberPatchAction | MemberRemoveAction
-    | MateAddAction | PortAddAction | ParameterValueAction | RuleExpressionAction,
+    | MateAddAction | PortAddAction | ParameterValueAction | ParameterAddAction | ParameterRemoveAction | BindingSetAction | PatternAddAction | PatternRemoveAction | RuleExpressionAction,
     Field(discriminator="type"),
 ]
 ComponentAction = TypeAdapter(TypedAction)

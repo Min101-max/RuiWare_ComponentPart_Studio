@@ -2,16 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import type { ComponentAction } from "../domain/componentReducer";
 import { SharedDraftController, httpDraftApi, initialSharedState } from "./sharedDraft";
 import type { PublishedTemplate } from "../library/publishedLibrary";
-import type { StageId } from "./stages";
+import type { ComponentMember, MemberParameterDefinition, Vector3 } from "../domain/component";
+import { interfacesForReconstruction, loadReconstructionInfo } from "../library/templatePreview";
+import { STAGES, type StageId } from "./stages";
 import { componentPublicationMember, fetchPublishedComponent, publishComponentDraft } from "../library/componentPublications";
-import { loadReconstructionInfo } from "../library/templatePreview";
+import { exportEvidenceFiles } from "../domain/evidenceStore";
 
-const initialMessage = "左侧可浏览已发布零部件，点击模板预览模型和版本信息";
+const initialMessage = "左侧可浏览已发布零部件，点击模板预览或使用加号加入组件";
 
 export function useComponentWorkspace() {
   const [shared, setShared] = useState(initialSharedState);
   const controller = useRef<SharedDraftController | null>(null);
-  const [stage, setStage] = useState<StageId>("definition");
+  const [stage, setStageState] = useState<StageId>(() => {
+    const requested = new URL(window.location.href).searchParams.get("stage");
+    return STAGES.some(item => item.id === requested) ? requested as StageId : "definition";
+  });
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
   const [previewTemplate, setPreviewTemplate] = useState<PublishedTemplate | null>(null);
   const [selectionResetToken, setSelectionResetToken] = useState(0);
@@ -53,6 +58,13 @@ export function useComponentWorkspace() {
 
   function dispatch(action: ComponentAction) { return controller.current?.dispatch(action) ?? false; }
 
+  function setStage(next: StageId) {
+    setStageState(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set("stage", next);
+    window.history.replaceState(null, "", url);
+  }
+
   function resetSelection() {
     setStage("definition");
     setSelectedMemberId(null);
@@ -84,6 +96,32 @@ export function useComponentWorkspace() {
     setMessage("已删除成员，并清理关联的连接、接口及参数绑定");
   }
 
+  function copyMember(id: string) {
+    const source = document.assembly.members.find(member => member.id === id);
+    if (!source) return;
+    const member: ComponentMember = structuredClone(source);
+    member.id = crypto.randomUUID();
+    member.name = `${source.name} 副本`;
+    member.role = `${source.role} 副本`;
+    member.position = [source.position[0] + 40, source.position[1], source.position[2]];
+    if (!dispatch({ type: "member.add", member })) return;
+    setSelectedMemberId(member.id);
+    setMessage(`已复制 ${source.name}`);
+  }
+
+  function moveMember(id: string, position: Vector3) {
+    dispatch({ type: "member.patch", id, patch: { position } });
+  }
+
+  async function openDraftLink(link: string) {
+    let id = link.trim();
+    if (!id) return;
+    try {
+      id = new URL(id, window.location.href).searchParams.get("draft") || id;
+      await selectDraft(id);
+    } catch { setMessage("链接格式不正确，请粘贴包含 draft 参数的草稿链接。"); }
+  }
+
   function connectFirstInterfaces() {
     const [a, b] = document.assembly.members;
     if (!a || !b) return setMessage("至少加入两个零部件后才能记录内部连接");
@@ -91,14 +129,14 @@ export function useComponentWorkspace() {
     if (!from || !to) return setMessage("成员缺少可连接接口，请先读取零部件接口定义");
     if (document.assembly.mates.some(mate => mate.from.memberId === a.id && mate.from.interfaceId === from.id && mate.to.memberId === b.id && mate.to.interfaceId === to.id)) return setMessage("这两个接口已记录连接关系");
     if (!dispatch({ type: "mate.add", mate: { id: crypto.randomUUID(), from: { memberId: a.id, interfaceId: from.id }, to: { memberId: b.id, interfaceId: to.id }, relation: "贴合", offset: 0 } })) return;
-    setMessage("已记录接口贴合关系；装配求解尚未接入，成员位置未改变");
+    setMessage("已记录接口贴合关系；请在预览中确认成员位置，连接关系会随草稿保存");
   }
 
   function inheritInterface() {
     if (!selectedMember) return setMessage("请先选择一个组件成员");
     const sourceInterface = selectedMember.interfaces.find(item => !document.ports.some(port => port.source.memberId === selectedMember.id && port.source.interfaceId === item.id));
     if (!sourceInterface) return setMessage("该成员没有尚未继承的接口");
-    if (!dispatch({ type: "port.add", port: { id: crypto.randomUUID(), name: `${selectedMember.name}-${sourceInterface.name}`, source: { memberId: selectedMember.id, interfaceId: sourceInterface.id }, tags: [...sourceInterface.tags] } })) return;
+    if (!dispatch({ type: "port.add", port: { id: crypto.randomUUID(), name: `${selectedMember.name}-${sourceInterface.name}`, source: { memberId: selectedMember.id, interfaceId: sourceInterface.id }, tags: [...sourceInterface.tags], interface: structuredClone(sourceInterface) } })) return;
     setStage("interfaces");
     setMessage(`已继承 ${sourceInterface.name} 为组件对外接口`);
   }
@@ -107,7 +145,8 @@ export function useComponentWorkspace() {
     let exported;
     try { exported = await controller.current?.export(); if (!exported) return; }
     catch { setMessage("导出失败，请先确认草稿已保存并处理同步问题。"); return; }
-    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" });
+    const packageWithEvidence = { ...exported as object, evidenceFiles: await exportEvidenceFiles(document.definition.evidence) };
+    const blob = new Blob([JSON.stringify(packageWithEvidence, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = window.document.createElement("a");
     const filename = document.definition.name.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_") || "组件模板";
@@ -147,10 +186,14 @@ export function useComponentWorkspace() {
         member = componentPublicationMember(publication, crypto.randomUUID());
       } else {
         const info = await loadReconstructionInfo(template, AbortSignal.timeout(20000));
+        const parameterDefinitions: MemberParameterDefinition[] = info.parameters.map(parameter => ({ id: parameter.id, label: parameter.label, unit: parameter.unit,
+          valueType: parameter.valueType, minimum: parameter.minimum, maximum: parameter.maximum, default: parameter.default }));
         member = { id: crypto.randomUUID(), name: template.name, code: template.code, role: template.name,
           template: { publicationId: template.publicationId, templateId: template.templateId, version: template.version, sha256: template.sha256 },
           position: [0, 0, 0] as [number, number, number], rotation: [0, 0, 0] as [number, number, number],
-          parameterValues: Object.fromEntries(info.parameters.map(parameter => [parameter.id, parameter.default])), interfaces: [],
+          parameterValues: Object.fromEntries(info.parameters.map(parameter => [parameter.id, parameter.default])), parameterDefinitions,
+          interfaces: interfacesForReconstruction(info),
+          ...(info.resolvedInterfacesAvailable ? { resolvedInterfaces: info.resolvedInterfaces } : {}),
         };
       }
       if (workspace !== controller.current || workspace.getSnapshot().draftId !== draftId) throw new Error("草稿已切换，请重新选择模板。");
@@ -163,8 +206,9 @@ export function useComponentWorkspace() {
     finally { setAdding(false); }
   }
 
-  function downloadLocalDraft() {
-    const blob = new Blob([JSON.stringify(document, null, 2)], { type: "application/json" });
+  async function downloadLocalDraft() {
+    const backupWithEvidence = { ...document, evidenceFiles: await exportEvidenceFiles(document.definition.evidence) };
+    const blob = new Blob([JSON.stringify(backupWithEvidence, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = window.document.createElement("a");
     link.href = url;
@@ -177,7 +221,8 @@ export function useComponentWorkspace() {
   const syncMessage = shared.error || (shared.status === "loading" ? "正在读取共享草稿…" : shared.status === "saving" ? "正在保存草稿…" : shared.notice || message);
   return { document, dispatch, stage, setStage, selectedMemberId, selectedMember, setSelectedMemberId, previewTemplate, setPreviewTemplate,
     selectionResetToken, message: syncMessage, setMessage, checks, newDraft, removeMember, connectFirstInterfaces, inheritInterface, exportDraft,
-    shared, editable, selectDraft, copyDraftLink, publishDraft, publishing, adding, addPublishedTemplate, libraryRefreshToken,
+    shared, editable, selectDraft, openDraftLink, copyDraftLink, publishDraft, publishing, adding, addPublishedTemplate, libraryRefreshToken,
+    copyMember, moveMember,
     downloadLocalDraft, dismissAgentChanges: () => controller.current?.dismissAgentChanges(),
     retrySave: () => { void controller.current?.retry().catch(() => {}); },
     reloadDraft: () => { void controller.current?.reload(); },

@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from fastapi.testclient import TestClient
 
-from backend.engine.template_core import TemplateDraft, lower_to_plan
+from backend.engine.template_core import SemanticFaceLocator, TemplateDraft, lower_to_plan
+from backend.engine.template_core.metamodel import (
+    FeatureRule, PartInterface, ResolvedFeature, SemanticFaceDefinition,
+)
+from backend.engine.template_core.rules import resolve_part_interfaces
 from backend.app.config import Settings
 from backend.app.main import create_app
 from backend.app.library import LibraryError, PublishedTemplate
@@ -16,6 +20,49 @@ from backend.tests.test_preview import STL, metadata
 
 
 class EngineSnapshotTests(unittest.TestCase):
+    def test_feature_derived_interfaces_resolve_to_their_feature_footprints(self):
+        interface = PartInterface(
+            id="beam.holes", name="螺栓孔", declarationMode="featureDerived",
+            sourceFeatureRuleId="holeRow", geometryRefs=["part.face.front"],
+        )
+        rule = FeatureRule(id="holeRow", name="孔列", featureType="circularHole")
+        features = [
+            ResolvedFeature(
+                id=f"holeRow.part_face_front.{index:03d}", featureType="circularHole",
+                arguments={"x": x, "z": 120, "diameter": 12}, semanticFaceId="part.face.front",
+                sourceRuleId="holeRow", index=index - 1,
+            )
+            for index, x in enumerate((-40, 40), start=1)
+        ]
+
+        resolved, diagnostics = resolve_part_interfaces([interface], [rule], features)
+
+        self.assertEqual(diagnostics, [])
+        self.assertEqual([item.region.model_dump() for item in resolved], [
+            {"mode": "rectangle", "uStart": -40.0, "vStart": 120.0, "uSpan": 12.0, "vSpan": 12.0},
+            {"mode": "rectangle", "uStart": 40.0, "vStart": 120.0, "uSpan": 12.0, "vSpan": 12.0},
+        ])
+
+    def test_semantic_face_locator_accepts_optional_coordinate_frame(self):
+        locator = SemanticFaceLocator.model_validate({
+            "kind": "profileEdge",
+            "coordinateFrame": None,
+            "operationId": "body.main",
+            "profileSketchId": "sketch.section.main",
+            "sourceEntityId": "edge.bottom",
+        })
+
+        self.assertIsNone(locator.coordinateFrame)
+        self.assertNotIn("coordinateFrame", locator.model_dump())
+
+        face = SemanticFaceDefinition(
+            id="part.face.profile",
+            label="型材截面",
+            hostFrame="profile",
+            locator=locator,
+        )
+        self.assertEqual(face.hostFrame, "profile")
+
     def test_user_parameter_changes_lowered_geometry(self):
         draft = TemplateDraft(name="preview")
         length = next(item for item in draft.parameterDefinitions if item.id == "length")
@@ -87,6 +134,7 @@ class EngineSnapshotTests(unittest.TestCase):
             info = client.get(f"/api/published-templates/version-1/reconstruction?sha256={digest}")
             self.assertEqual(info.status_code, 200, info.text)
             self.assertEqual(info.json()["parameters"][0]["id"], "length")
+            self.assertEqual(info.json()["interfaces"], [])
             oversized = client.post(f"/api/published-templates/version-1/reconstruction/model?sha256={digest}", content=b"{" + b" " * (64 * 1024) + b"}", headers={"content-type": "application/json"})
             self.assertEqual(oversized.status_code, 413)
             small = client.post(f"/api/published-templates/version-1/reconstruction/model?sha256={digest}", json={"parameters": {"length": 120}})
@@ -181,6 +229,26 @@ class AvailabilityTests(unittest.TestCase):
         self.assertEqual(self.check().status_code, 503)
         self.worker.side_effect = None
         self.assertEqual(self.check().json(), {"available": True})
+
+    @patch("backend.app.reconstruction.resolved_interfaces")
+    def test_reconstruction_resolves_interfaces_with_current_parameter_values(self, resolve):
+        resolve.return_value = ([{"id": "hole.1"}], [])
+        query = json.dumps({"length": 800})
+        response = self.client.get(
+            f"/api/published-templates/version-1/reconstruction?sha256={self.publication.sha256}&parameters={query}"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["resolvedInterfaces"], [{"id": "hole.1"}])
+        self.assertTrue(response.json()["resolvedInterfacesAvailable"])
+        resolve.assert_called_once_with(self.draft, {"record": {"thickness": 2}}, {"length": 800})
+
+        resolve.reset_mock()
+        invalid = self.client.get(
+            f"/api/published-templates/version-1/reconstruction?sha256={self.publication.sha256}&parameters="
+            + json.dumps({"innerBendRadius": 25})
+        )
+        self.assertEqual(invalid.status_code, 422)
+        resolve.assert_not_called()
 
 
 if __name__ == "__main__":

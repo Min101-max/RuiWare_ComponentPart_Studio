@@ -1,9 +1,11 @@
 from contextlib import closing
+import base64
 from datetime import datetime, timezone
-import json
 import hashlib
+import json
 from io import BytesIO
 from pathlib import Path
+import re
 import sqlite3
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
@@ -31,6 +33,11 @@ class DraftRepository:
                 draft_id TEXT NOT NULL, revision INTEGER NOT NULL,
                 actor TEXT NOT NULL, created_at TEXT NOT NULL, items TEXT NOT NULL,
                 PRIMARY KEY (draft_id, revision)
+            )""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS component_draft_evidence (
+                draft_id TEXT NOT NULL, id TEXT NOT NULL, file_name TEXT NOT NULL,
+                media_type TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, content BLOB NOT NULL,
+                PRIMARY KEY (draft_id, id)
             )""")
             connection.execute("""CREATE TABLE IF NOT EXISTS component_publications (
                 id TEXT PRIMARY KEY, draft_id TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -164,9 +171,64 @@ class DraftRepository:
                 connection.execute("INSERT INTO component_draft_changes VALUES (?, ?, ?, ?, ?)", (
                     draft_id, updated.revision, actor, now, json.dumps(items, ensure_ascii=False),
                 ))
+                self._remove_unreferenced_evidence(connection, draft_id, updated)
             result = self._envelope(connection, draft_id, updated, expected_revision)
             result["reconciled"] = reconciled
             return result
+
+    def save_evidence(self, draft_id: str, evidence_id: str, file_name: str, media_type: str, content: bytes) -> dict:
+        if not re.fullmatch(r"[0-9a-f-]{36}", evidence_id) or len(file_name) > 255 or not file_name.strip():
+            raise ComponentError(422, "INVALID_EVIDENCE")
+        if len(content) > 5 * 1024 * 1024:
+            raise ComponentError(413, "EVIDENCE_TOO_LARGE")
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM component_drafts WHERE id = ?", (draft_id,)).fetchone() is None:
+                raise ComponentError(404, "DRAFT_NOT_FOUND")
+            prior = connection.execute("SELECT size FROM component_draft_evidence WHERE draft_id = ? AND id = ?", (draft_id, evidence_id)).fetchone()
+            total = connection.execute("SELECT COALESCE(SUM(size), 0) AS size FROM component_draft_evidence WHERE draft_id = ?", (draft_id,)).fetchone()["size"]
+            if total - (prior["size"] if prior else 0) + len(content) > 15 * 1024 * 1024:
+                raise ComponentError(413, "EVIDENCE_TOTAL_TOO_LARGE")
+            digest = hashlib.sha256(content).hexdigest()
+            connection.execute("""INSERT INTO component_draft_evidence VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(draft_id, id) DO UPDATE SET file_name=excluded.file_name,
+                media_type=excluded.media_type, size=excluded.size, sha256=excluded.sha256, content=excluded.content""",
+                (draft_id, evidence_id, file_name, media_type[:255] or "application/octet-stream", len(content), digest, content))
+        return {"id": evidence_id, "fileName": file_name, "mediaType": media_type[:255] or "application/octet-stream",
+                "size": len(content), "sha256": digest, "dataUrl": None}
+
+    def get_evidence(self, draft_id: str, evidence_id: str) -> dict:
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT * FROM component_draft_evidence WHERE draft_id = ? AND id = ?", (draft_id, evidence_id)).fetchone()
+        if row is None:
+            raise ComponentError(404, "EVIDENCE_NOT_FOUND")
+        return {"id": row["id"], "fileName": row["file_name"], "mediaType": row["media_type"], "size": row["size"],
+                "sha256": row["sha256"], "content": bytes(row["content"])}
+
+    def delete_evidence(self, draft_id: str, evidence_id: str) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute("DELETE FROM component_draft_evidence WHERE draft_id = ? AND id = ?", (draft_id, evidence_id))
+
+    def export(self, draft_id: str) -> dict:
+        from .service import serialize_component
+
+        document = ComponentDocument.model_validate(self.get(draft_id)["document"])
+        result = serialize_component(document)
+        for evidence in result["stages"]["definition"].get("evidence", []):
+            try:
+                stored = self.get_evidence(draft_id, evidence["id"])
+            except ComponentError:
+                continue
+            evidence["dataUrl"] = f"data:{stored['mediaType']};base64,{base64.b64encode(stored['content']).decode('ascii')}"
+        return result
+
+    @staticmethod
+    def _remove_unreferenced_evidence(connection, draft_id: str, document: ComponentDocument):
+        referenced = {item.id for item in document.definition.evidence}
+        rows = connection.execute("SELECT id FROM component_draft_evidence WHERE draft_id = ?", (draft_id,)).fetchall()
+        for row in rows:
+            if row["id"] not in referenced:
+                connection.execute("DELETE FROM component_draft_evidence WHERE draft_id = ? AND id = ?", (draft_id, row["id"]))
 
     @staticmethod
     def _envelope(connection, draft_id, document, after_revision):
