@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, ExternalLink, Paperclip, X } from "lucide-react";
-import type { ComponentDefinition, ComponentMember, ConnectionMethod, EvidenceAttachment } from "../domain/component";
+import type { ComponentDefinition, ComponentMember, ConnectionMethod, EvidenceAttachment, PartInterface } from "../domain/component";
 import { interfaceGender } from "../domain/interfaceCompatibility";
 import { deleteEvidenceFile, readEvidenceFile, saveEvidenceFile } from "../domain/evidenceStore";
 import { interfacesForReconstruction, loadReconstructionInfo } from "../library/templatePreview";
@@ -55,6 +55,27 @@ function summarizeInterfaces(members: ComponentMember[]) {
     dimensions: [...group.dimensions].join(" / "),
     modes: [...group.modes, ...[...group.genders].map(gender => `公母：${gender}`), ...[...group.methods].map(method => `连接：${method}`)].join("、") || "未声明",
   }));
+}
+
+function describeInterfaceDimensions(item: PartInterface): string {
+  const size = item.interfaceSize;
+  if (size && [size.diameter, size.width, size.height, size.depth].some(value => value !== undefined)) {
+    const physical = [
+      size.diameter !== undefined ? `直径 ${size.diameter}` : "",
+      size.width !== undefined ? `宽 ${size.width}` : "",
+      size.height !== undefined ? `高 ${size.height}` : "",
+      size.depth !== undefined ? `深 ${size.depth}` : "",
+    ].filter(Boolean).join(" × ");
+    return `${physical}${size.unit ? ` ${size.unit}` : " mm"}`;
+  }
+  const region = item.region;
+  if (region?.uSpan !== undefined && region.vSpan !== undefined) return `${region.uSpan} × ${region.vSpan} mm`;
+  if (region?.uSpanExpression || region?.vSpanExpression) return `U ${region.uSpanExpression || "?"} × V ${region.vSpanExpression || "?"}`;
+  return "未声明";
+}
+
+function memberInterfaceDimensions(member: ComponentMember): string {
+  return [...new Set(member.interfaces.map(describeInterfaceDimensions))].join("、") || "未声明";
 }
 
 function ConnectionEditor({ label, method, onChange }: { label: string; method: ConnectionMethod; onChange: (method: ConnectionMethod) => void }) {
@@ -189,9 +210,10 @@ export function DefinitionStage({ definition, members, selectedMemberId, hovered
         {resolvedInterfaceState.key === memberInterfaceKey && resolvedInterfaceState.warning && <p className="empty-text">部分接口信息暂时无法更新，当前显示最近读取的数据。</p>}
         <ul className="definition-member-list">{displayMembers.map(member => <li key={member.id} className={`${selectedMemberId === member.id ? "selected" : ""} ${hoveredMemberId === member.id ? "hovered" : ""} ${compatibleMemberIds.has(member.id) ? "compatible-candidate" : ""}`} role="button" tabIndex={0} aria-pressed={selectedMemberId === member.id} onClick={() => onSelectMember(member.id)} onMouseEnter={() => onHoverMember(member.id)} onMouseLeave={() => onHoverMember(null)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectMember(member.id); } }}>
         <b>{member.role || member.name}</b><span>{member.interfaces.length} 个接口</span>
+        <small className="definition-member-interface-size">接口尺寸：{memberInterfaceDimensions(member)}</small>
         {member.parameterDefinitions?.length ? <small>可调范围：{member.parameterDefinitions.map(parameter => `${parameter.label}: ${parameter.minimum ?? "无下限"} ～ ${parameter.maximum ?? "无上限"}${parameter.unit ? ` ${parameter.unit}` : ""}`).join(" · ")}</small> : <small>未定义可调参数范围</small>}
       </li>)}</ul>
-        {interfaceSummary.length > 0 && <div className="definition-interface-summary"><b>接口种类汇总 · 零部件之间连接方式：{definition.connectionForms.internal.value}</b>{interfaceSummary.map(item => <small key={item.kind}>接口种类：{item.kind} · 物理尺寸：{item.dimensions} · 接口模式：{item.modes} · 数量：{item.count}</small>)}</div>}
+        {interfaceSummary.length > 0 && <div className="definition-interface-summary"><b>接口种类汇总 · 零部件之间连接方式：{definition.connectionForms.internal.value}</b>{interfaceSummary.map(item => <div className="definition-interface-item" key={item.kind}><b>{item.kind} · {item.count} 个</b><small>物理尺寸：{item.dimensions}</small><small>接口模式：{item.modes}</small></div>)}</div>}
       </>}
     </section>
 
