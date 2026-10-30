@@ -110,7 +110,23 @@ export function useComponentWorkspace() {
   }
 
   function moveMember(id: string, position: Vector3) {
-    dispatch({ type: "member.patch", id, patch: { position } });
+    const member = document.assembly.members.find(item => item.id === id);
+    if (!member) return;
+    const delta: Vector3 = [position[0] - member.position[0], position[1] - member.position[1], position[2] - member.position[2]];
+    const moved = new Set<string>([id]);
+    const queue = [id];
+    while (queue.length) {
+      const current = queue.shift()!;
+      document.assembly.mates.forEach(mate => {
+        const neighbor = mate.from.memberId === current ? mate.to.memberId : mate.to.memberId === current ? mate.from.memberId : null;
+        if (neighbor && !moved.has(neighbor)) { moved.add(neighbor); queue.push(neighbor); }
+      });
+    }
+    moved.forEach(memberId => {
+      const item = document.assembly.members.find(candidate => candidate.id === memberId);
+      if (!item) return;
+      dispatch({ type: "member.patch", id: memberId, patch: { position: [item.position[0] + delta[0], item.position[1] + delta[1], item.position[2] + delta[2]] } });
+    });
   }
 
   async function openDraftLink(link: string) {
@@ -130,6 +146,32 @@ export function useComponentWorkspace() {
     if (document.assembly.mates.some(mate => mate.from.memberId === a.id && mate.from.interfaceId === from.id && mate.to.memberId === b.id && mate.to.interfaceId === to.id)) return setMessage("这两个接口已记录连接关系");
     if (!dispatch({ type: "mate.add", mate: { id: crypto.randomUUID(), from: { memberId: a.id, interfaceId: from.id }, to: { memberId: b.id, interfaceId: to.id }, relation: "贴合", offset: 0 } })) return;
     setMessage("已记录接口贴合关系；请在预览中确认成员位置，连接关系会随草稿保存");
+  }
+
+  function connectInterfaces(from: { memberId: string; interfaceId: string }, to: { memberId: string; interfaceId: string }) {
+    if (from.memberId === to.memberId) return setMessage("请选择两个不同零部件的接口");
+    if (document.assembly.mates.some(mate => [mate.from, mate.to].some(endpoint => endpoint.memberId === from.memberId && endpoint.interfaceId === from.interfaceId || endpoint.memberId === to.memberId && endpoint.interfaceId === to.interfaceId))) return setMessage("一个接口只能连接一次，请先删除原有连接");
+    if (!dispatch({ type: "mate.add", mate: { id: crypto.randomUUID(), from, to, relation: "贴合", offset: 0 } })) return;
+    const source = document.assembly.members.find(member => member.id === from.memberId);
+    const target = document.assembly.members.find(member => member.id === to.memberId);
+    const sourceInterface = source?.interfaces.find(item => item.id === from.interfaceId);
+    const targetInterface = target?.interfaces.find(item => item.id === to.interfaceId);
+    if (source && target && sourceInterface && targetInterface) {
+      const center = (item: typeof sourceInterface) => [
+        ((item.region?.uStart || 0) + (item.region?.uSpan || 0) / 2),
+        ((item.region?.vStart || 0) + (item.region?.vSpan || 0) / 2),
+        0,
+      ] as Vector3;
+      const a = center(sourceInterface), b = center(targetInterface);
+      dispatch({ type: "member.patch", id: target.id, patch: { position: [source.position[0] + a[0] - b[0], source.position[1] + a[1] - b[1], source.position[2] + a[2] - b[2]] } });
+    }
+    setMessage("已连接两个接口；模型位置将按接口区域中心对齐");
+  }
+
+  function removeConnection(id: string) {
+    if (!document.assembly.mates.some(mate => mate.id === id)) return setMessage("连接已不存在或已刷新");
+    if (!dispatch({ type: "mate.remove", id })) return;
+    setMessage("已删除接口连接，零部件恢复独立移动");
   }
 
   function inheritInterface() {
@@ -220,9 +262,9 @@ export function useComponentWorkspace() {
 
   const syncMessage = shared.error || (shared.status === "loading" ? "正在读取共享草稿…" : shared.status === "saving" ? "正在保存草稿…" : shared.notice || message);
   return { document, dispatch, stage, setStage, selectedMemberId, selectedMember, setSelectedMemberId, previewTemplate, setPreviewTemplate,
-    selectionResetToken, message: syncMessage, setMessage, checks, newDraft, removeMember, connectFirstInterfaces, inheritInterface, exportDraft,
+    selectionResetToken, message: syncMessage, setMessage, checks, newDraft, removeMember, moveMember, connectFirstInterfaces, connectInterfaces, removeConnection, inheritInterface, exportDraft,
     shared, editable, selectDraft, openDraftLink, copyDraftLink, publishDraft, publishing, adding, addPublishedTemplate, libraryRefreshToken,
-    copyMember, moveMember,
+    copyMember,
     downloadLocalDraft, dismissAgentChanges: () => controller.current?.dismissAgentChanges(),
     retrySave: () => { void controller.current?.retry().catch(() => {}); },
     reloadDraft: () => { void controller.current?.reload(); },

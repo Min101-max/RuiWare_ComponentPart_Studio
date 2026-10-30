@@ -76,9 +76,15 @@ def apply_action(document: ComponentDocument, action: TypedAction) -> ComponentD
         mate = action.mate
         if not has_interface(document, mate.from_) or not has_interface(document, mate.to) or mate.from_.memberId == mate.to.memberId:
             raise ComponentError(422, "INVALID_REFERENCE")
+        if any(endpoint == mate.from_ or endpoint == mate.to for item in document.assembly.mates for endpoint in (item.from_, item.to)):
+            raise ComponentError(422, "INTERFACE_ALREADY_CONNECTED")
         if any(item.id == mate.id or (item.from_ == mate.from_ and item.to == mate.to) for item in document.assembly.mates):
             raise ComponentError(422, "DUPLICATE_CONNECTION")
         data["assembly"]["mates"].append(mate.model_dump(by_alias=True))
+    elif action.type == "mate.remove":
+        if not any(item.id == action.id for item in document.assembly.mates):
+            raise ComponentError(404, "MATE_NOT_FOUND")
+        data["assembly"]["mates"] = [item for item in data["assembly"]["mates"] if item["id"] != action.id]
     elif action.type == "port.add":
         port = action.port
         source_member = next((member for member in document.assembly.members if member.id == port.source.memberId), None)

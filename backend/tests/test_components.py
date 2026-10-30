@@ -223,6 +223,15 @@ console.log(JSON.stringify({document:result,checks:validateComponent(result),exp
             }})
             self.assertEqual(added.status_code, 200, added.text)
             self.assertEqual(added.json()["document"]["assembly"]["mates"][0]["from"], source("member.a"))
+            duplicate_endpoint = self.action(client, imported, {"type": "mate.add", "mate": {
+                "id": "ac", "from": source("member.a"), "to": source("member.b"), "relation": "贴合", "offset": 0,
+            }}, revision=added.json()["document"]["revision"])
+            self.assertEqual(duplicate_endpoint.status_code, 422)
+            self.assertEqual(duplicate_endpoint.json()["error"]["code"], "INTERFACE_ALREADY_CONNECTED")
+            removed = self.action(client, imported, {"type": "mate.remove", "id": "ab"}, revision=added.json()["document"]["revision"])
+            self.assertEqual(removed.status_code, 200, removed.text)
+            self.assertEqual(removed.json()["document"]["assembly"]["mates"], [])
+            self.assertEqual(removed.json()["document"]["assembly"]["members"][0]["interfaces"][0]["id"], "face.left")
             invalid = json.loads(json.dumps(data))
             invalid["assembly"]["members"][0]["template"]["secret"] = "must not persist"
             self.assertEqual(client.post("/api/component-drafts", json={"document": invalid}).status_code, 422)

@@ -273,6 +273,11 @@ class MateAddAction(ComponentModel):
     mate: Mate
 
 
+class MateRemoveAction(ComponentModel):
+    type: Literal["mate.remove"]
+    id: str
+
+
 class PortAddAction(ComponentModel):
     type: Literal["port.add"]
     port: ComponentPort
@@ -318,7 +323,7 @@ class RuleExpressionAction(ComponentModel):
 
 TypedAction = Annotated[
     ResetAction | DefinitionPatchAction | MemberAddAction | MemberPatchAction | MemberRemoveAction
-    | MateAddAction | PortAddAction | ParameterValueAction | ParameterAddAction | ParameterRemoveAction | BindingSetAction | PatternAddAction | PatternRemoveAction | RuleExpressionAction,
+    | MateAddAction | MateRemoveAction | PortAddAction | ParameterValueAction | ParameterAddAction | ParameterRemoveAction | BindingSetAction | PatternAddAction | PatternRemoveAction | RuleExpressionAction,
     Field(discriminator="type"),
 ]
 ComponentAction = TypeAdapter(TypedAction)

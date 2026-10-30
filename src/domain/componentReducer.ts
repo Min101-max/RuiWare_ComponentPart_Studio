@@ -9,6 +9,7 @@ export type ComponentAction =
   | { type: "member.patch"; id: string; patch: Partial<Pick<ComponentMember, "role" | "position" | "rotation" | "parameterValues">> }
   | { type: "member.remove"; id: string }
   | { type: "mate.add"; mate: Mate }
+  | { type: "mate.remove"; id: string }
   | { type: "port.add"; port: ComponentPort }
   | { type: "parameter.value"; id: string; value: number | null }
   | { type: "parameter.add"; parameter: import("./component.ts").ComponentParameter }
@@ -85,12 +86,16 @@ export function componentReducer(document: ComponentDocument, action: ComponentA
     case "mate.add": {
       const mate = action.mate;
       if (!hasInterface(document, mate.from) || !hasInterface(document, mate.to) || mate.from.memberId === mate.to.memberId ||
+        document.assembly.mates.some(item => item.from.memberId === mate.from.memberId && item.from.interfaceId === mate.from.interfaceId || item.to.memberId === mate.from.memberId && item.to.interfaceId === mate.from.interfaceId || item.from.memberId === mate.to.memberId && item.from.interfaceId === mate.to.interfaceId || item.to.memberId === mate.to.memberId && item.to.interfaceId === mate.to.interfaceId) ||
         document.assembly.mates.some(item => item.id === mate.id || (
           item.from.memberId === mate.from.memberId && item.from.interfaceId === mate.from.interfaceId &&
           item.to.memberId === mate.to.memberId && item.to.interfaceId === mate.to.interfaceId
         ))) return document;
       return next({ assembly: { ...document.assembly, mates: [...document.assembly.mates, structuredClone(mate)] } });
     }
+    case "mate.remove":
+      if (!document.assembly.mates.some(item => item.id === action.id)) return document;
+      return next({ assembly: { ...document.assembly, mates: document.assembly.mates.filter(item => item.id !== action.id) } });
     case "port.add": {
       if (!hasInterface(document, action.port.source) || document.ports.some(port => port.id === action.port.id ||
         (port.source.memberId === action.port.source.memberId && port.source.interfaceId === action.port.source.interfaceId))) return document;
